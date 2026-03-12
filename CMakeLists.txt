@@ -4,7 +4,7 @@ project(body)
 enable_testing()
 set(EVA_TARGET eva)
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
-set(version b8149)
+set(version b8287)
 
 # 输出目录（所有构建类型）
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
@@ -49,3 +49,4 @@ if (EVA_ENABLE_COVERAGE)
         message(WARNING "gcovr executable not found; 'coverage' target will not be available.")
     endif()
 endif()
+
