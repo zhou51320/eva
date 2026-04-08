@@ -19,3 +19,4 @@ build32
 build_ninja
 build-*
 build_*
+.worktrees/
