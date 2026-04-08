@@ -91,6 +91,7 @@
 #include "../xconfig.h"  // ui和bot都要导入的共有配置
 #include "thirdparty/QHotkey/QHotkey/qhotkey.h"
 #include "skill_drop_area.h"
+#include "ui_theme_tokens.h"
 
 QT_BEGIN_NAMESPACE
 namespace Ui
@@ -963,7 +964,6 @@ class Widget : public QWidget
     void applyGlobalFont(const QString &family, int sizePt, bool persist);
     void applyOutputFont(const QString &family, int sizePt, bool persist);
     void applyGlobalTheme(const QString &themeId, bool persist);
-    QString buildThemeOverlay(const QString &themeId) const;
     QString buildFontOverrideCss() const;
     QString buildOutputFontCss() const;
     void refreshApplicationStyles();
@@ -971,12 +971,11 @@ class Widget : public QWidget
     QString resolvedOutputFontFamily() const;
     int resolvedOutputFontSize() const;
     QFont currentOutputFont() const;
-    void updateThemeVisuals();
     void updateGlobalSettingsTranslations();
     void loadOutputFontFromResource();
     QColor themeStateColor(SIGNAL_STATE state) const;
-    QColor themeTextPrimary() const { return themeVisuals_.textPrimary; }
-    QColor themeThinkColor() const { return themeVisuals_.textSecondary; }
+    QColor themeTextPrimary() const { return themeTokens_.textPrimary; }
+    QColor themeThinkColor() const { return themeTokens_.textSecondary; }
     int predictTokenCap() const;
     void enforcePredictLimit(bool syncSpin = true, bool clampSettings = true);
     // Control channel helpers
@@ -1075,22 +1074,7 @@ class Widget : public QWidget
     QString outputFontFallbackFamily_;
     int outputFontFallbackSizePt_ = kDefaultOutputFontPt;
     bool outputFontResourceLoaded_ = false;
-    struct ThemeVisuals
-    {
-        QString id = QStringLiteral("unit01");
-        bool darkBase = false;
-        QColor textPrimary = NORMAL_BLACK;
-        QColor textSecondary = THINK_GRAY;
-        QColor stateSignal = SYSTEM_BLUE;
-        QColor stateSuccess = QColor(0, 200, 0);
-        QColor stateWrong = QColor(200, 0, 0);
-        QColor stateEva = NORMAL_BLACK;
-        QColor stateTool = TOOL_BLUE;
-        QColor stateSync = LCL_ORANGE;
-        QColor systemRole = SYSTEM_BLUE;
-        QColor assistantRole = LCL_ORANGE;
-    };
-    ThemeVisuals themeVisuals_;
+    UiThemeTokens themeTokens_;
     // 控制器：从 Widget 中剥离会话与工具流逻辑
     SessionController *sessionController_ = nullptr;
     ToolFlowController *toolFlowController_ = nullptr;

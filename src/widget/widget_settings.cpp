@@ -454,22 +454,6 @@ void Widget::applyOutputFont(const QString &family, int sizePt, bool persist)
     if (persist) auto_save_user();
 }
 
-QString Widget::buildThemeOverlay(const QString &themeId) const
-{
-    if (themeId.isEmpty() || themeId == QStringLiteral("unit01")) return QString();
-    static const QHash<QString, QString> themePaths = {
-        {QStringLiteral("unit00"), QStringLiteral(":/QSS/theme_unit00.qss")},
-        {QStringLiteral("unit02"), QStringLiteral(":/QSS/theme_unit02.qss")},
-        {QStringLiteral("unit03"), QStringLiteral(":/QSS/theme_unit03.qss")} };
-    const QString path = themePaths.value(themeId);
-    if (path.isEmpty()) return QString();
-
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) return QString();
-    const QByteArray data = file.readAll();
-    return QString::fromUtf8(data);
-}
-
 QString Widget::buildFontOverrideCss() const
 {
     const QString family = globalUiSettings_.fontFamily.trimmed();
@@ -523,11 +507,18 @@ void Widget::refreshApplicationStyles()
     QApplication::setFont(target);
 
     QString composed = baseStylesheet_;
-    const QString overlay = buildThemeOverlay(globalUiSettings_.themeId);
-    if (!overlay.isEmpty())
+    if (!themeTokens_.overlayResourcePath.isEmpty())
     {
-        if (!composed.isEmpty()) composed.append('\n');
-        composed.append(overlay);
+        QFile file(themeTokens_.overlayResourcePath);
+        if (file.open(QIODevice::ReadOnly | QIODevice::Text))
+        {
+            const QString overlay = QString::fromUtf8(file.readAll());
+            if (!overlay.isEmpty())
+            {
+                if (!composed.isEmpty()) composed.append('\n');
+                composed.append(overlay);
+            }
+        }
     }
     const QString fontCss = buildFontOverrideCss();
     if (!fontCss.isEmpty())
@@ -543,72 +534,8 @@ void Widget::refreshApplicationStyles()
     }
     if (qApp) qApp->setStyleSheet(composed);
     refreshOutputFont();
-    updateThemeVisuals();
 }
 
-void Widget::updateThemeVisuals()
-{
-    ThemeVisuals v;
-    const QString id = globalUiSettings_.themeId.isEmpty() ? QStringLiteral("unit01") : globalUiSettings_.themeId;
-    v.id = id;
-    if (id == QLatin1String("unit02"))
-    {
-        v.darkBase = true;
-        v.textPrimary = QColor("#ffe3d9");
-        v.textSecondary = QColor("#ffbca7");
-        v.stateSignal = QColor("#8dbdff");
-        v.stateSuccess = QColor("#86ffb1");
-        v.stateWrong = QColor("#ff9a9a");
-        v.stateEva = QColor("#ffc6ff");
-        v.stateTool = QColor("#7fd8ff");
-        v.stateSync = QColor("#ffc67c");
-        v.systemRole = v.stateSignal;
-        v.assistantRole = v.stateSync;
-    }
-    else if (id == QLatin1String("unit03"))
-    {
-        v.darkBase = true;
-        v.textPrimary = QColor("#e9edff");
-        v.textSecondary = QColor("#b9c3ff");
-        v.stateSignal = QColor("#9bb4ff");
-        v.stateSuccess = QColor("#8dffd2");
-        v.stateWrong = QColor("#ff9fc0");
-        v.stateEva = QColor("#d8bdff");
-        v.stateTool = QColor("#84ddff");
-        v.stateSync = QColor("#ffd185");
-        v.systemRole = v.stateSignal;
-        v.assistantRole = v.stateSync;
-    }
-    else if (id == QLatin1String("unit00"))
-    {
-        v.darkBase = false;
-        v.textPrimary = NORMAL_BLACK;
-        v.textSecondary = THINK_GRAY;
-        v.stateSignal = SYSTEM_BLUE;
-        v.stateSuccess = QColor(0, 200, 0);
-        v.stateWrong = QColor(200, 0, 0);
-        v.stateEva = SYSTEM_BLUE;
-        v.stateTool = TOOL_BLUE;
-        v.stateSync = LCL_ORANGE;
-        v.systemRole = SYSTEM_BLUE;
-        v.assistantRole = LCL_ORANGE;
-    }
-    else
-    {
-        v.darkBase = false;
-        v.textPrimary = NORMAL_BLACK;
-        v.textSecondary = THINK_GRAY;
-        v.stateSignal = SYSTEM_BLUE;
-        v.stateSuccess = QColor(0, 200, 0);
-        v.stateWrong = QColor(200, 0, 0);
-        v.stateEva = SYSTEM_BLUE;
-        v.stateTool = TOOL_BLUE;
-        v.stateSync = LCL_ORANGE;
-        v.systemRole = SYSTEM_BLUE;
-        v.assistantRole = LCL_ORANGE;
-    }
-    themeVisuals_ = v;
-}
 
 void Widget::refreshOutputFont()
 {
@@ -713,15 +640,15 @@ QColor Widget::themeStateColor(SIGNAL_STATE state) const
 {
     switch (state)
     {
-    case SIGNAL_SIGNAL: return themeVisuals_.stateSignal;
-    case SUCCESS_SIGNAL: return themeVisuals_.stateSuccess;
-    case WRONG_SIGNAL: return themeVisuals_.stateWrong;
-    case EVA_SIGNAL: return themeVisuals_.stateEva;
-    case TOOL_SIGNAL: return themeVisuals_.stateTool;
-    case SYNC_SIGNAL: return themeVisuals_.stateSync;
+    case SIGNAL_SIGNAL: return themeTokens_.stateSignal;
+    case SUCCESS_SIGNAL: return themeTokens_.stateSuccess;
+    case WRONG_SIGNAL: return themeTokens_.stateWrong;
+    case EVA_SIGNAL: return themeTokens_.stateEva;
+    case TOOL_SIGNAL: return themeTokens_.stateTool;
+    case SYNC_SIGNAL: return themeTokens_.stateSync;
     case MATRIX_SIGNAL:
     case USUAL_SIGNAL:
-    default: return themeVisuals_.textPrimary;
+    default: return themeTokens_.textPrimary;
     }
 }
 
@@ -729,13 +656,13 @@ QColor Widget::chipColorForRole(RecordRole r) const
 {
     switch (r)
     {
-    case RecordRole::Tool: return themeVisuals_.stateTool;
-    case RecordRole::Think: return themeVisuals_.textSecondary;
-    case RecordRole::Assistant: return themeVisuals_.assistantRole;
-    case RecordRole::Compact: return themeVisuals_.stateEva;
+    case RecordRole::Tool: return themeTokens_.stateTool;
+    case RecordRole::Think: return themeTokens_.textSecondary;
+    case RecordRole::Assistant: return themeTokens_.assistantRole;
+    case RecordRole::Compact: return themeTokens_.stateEva;
     case RecordRole::User:
     case RecordRole::System:
-    default: return themeVisuals_.systemRole;
+    default: return themeTokens_.systemRole;
     }
 }
 
@@ -743,24 +670,17 @@ QColor Widget::textColorForRole(RecordRole r) const
 {
     switch (r)
     {
-    case RecordRole::Think: return themeVisuals_.textSecondary;
-    case RecordRole::Tool: return themeVisuals_.stateTool;
-    case RecordRole::Compact: return themeVisuals_.stateEva;
-    default: return themeVisuals_.textPrimary;
+    case RecordRole::Think: return themeTokens_.textSecondary;
+    case RecordRole::Tool: return themeTokens_.stateTool;
+    case RecordRole::Compact: return themeTokens_.stateEva;
+    default: return themeTokens_.textPrimary;
     }
 }
 
 void Widget::applyGlobalTheme(const QString &themeId, bool persist)
 {
-    QString effective = themeId;
-    if (effective.isEmpty()) effective = QStringLiteral("unit01");
-    if (effective != QStringLiteral("unit01") && effective != QStringLiteral("unit00") &&
-        effective != QStringLiteral("unit02") && effective != QStringLiteral("unit03"))
-    {
-        effective = QStringLiteral("unit01");
-    }
-
-    globalUiSettings_.themeId = effective;
+    themeTokens_ = resolveUiThemeTokens(themeId);
+    globalUiSettings_.themeId = themeTokens_.themeId;
     refreshApplicationStyles();
     syncGlobalSettingsPanelControls();
     if (persist) auto_save_user();

@@ -520,10 +520,10 @@ void Widget::insertTextWithToolHighlight(QTextCursor &cursor, const QString &tex
 
     // 高亮样式：只把“原本带背景填充”的那部分（标签/参数名）改为蓝灰色，
     // 其余（关键字段/工具名）仍保持原有配色，以便用户一眼分辨层级。
-    const QColor highlightBlueGray = themeVisuals_.darkBase ? PROMPT_TOOL_HIGHLIGHT_BLUEGRAY_DARK
+    const QColor highlightBlueGray = themeTokens_.darkBase ? PROMPT_TOOL_HIGHLIGHT_BLUEGRAY_DARK
                                                             : PROMPT_TOOL_HIGHLIGHT_BLUEGRAY_LIGHT;
-    const QColor toolColor = themeVisuals_.stateTool;
-    const QColor keyColor = themeVisuals_.stateSignal;
+    const QColor toolColor = themeTokens_.stateTool;
+    const QColor keyColor = themeTokens_.stateSignal;
 
     QTextCharFormat tagFmt;
     tagFmt.setForeground(QBrush(highlightBlueGray));
