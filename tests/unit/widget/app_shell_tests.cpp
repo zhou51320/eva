@@ -7,6 +7,7 @@
 #include "widget/app_shell.h"
 #include "widget/context_drawer.h"
 #include "widget/chat_workspace_page.h"
+#include "widget/engineer_workspace_page.h"
 
 namespace
 {
@@ -153,4 +154,15 @@ TEST_CASE("ChatWorkspacePage exposes header and composer hosts")
     REQUIRE(page.sessionListHost() != nullptr);
     REQUIRE(page.messageHost() != nullptr);
     REQUIRE(page.composerHost() != nullptr);
+}
+
+TEST_CASE("EngineerWorkspacePage exposes overview cards")
+{
+    ensureQtApp();
+
+    EngineerWorkspacePage page;
+
+    REQUIRE(page.projectSummaryCard() != nullptr);
+    REQUIRE(page.quickActionsCard() != nullptr);
+    REQUIRE(page.recentContextCard() != nullptr);
 }

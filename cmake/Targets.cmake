@@ -45,6 +45,7 @@ add_executable(
     src/widget/app_shell.cpp src/widget/app_shell.h src/widget/app_shell.ui
     src/widget/context_drawer.cpp src/widget/context_drawer.h src/widget/context_drawer.ui
     src/widget/chat_workspace_page.cpp src/widget/chat_workspace_page.h src/widget/chat_workspace_page.ui
+    src/widget/engineer_workspace_page.cpp src/widget/engineer_workspace_page.h src/widget/engineer_workspace_page.ui
     src/widget/widget_session.cpp
     src/widget/widget_toolflow.cpp
     src/widget/widget_records.cpp

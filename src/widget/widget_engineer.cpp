@@ -1,5 +1,6 @@
 #include "widget.h"
 #include "context_drawer.h"
+#include "engineer_workspace_page.h"
 #include "ui_widget.h"
 #include <QDate>
 #include <QDateTime>
@@ -917,6 +918,10 @@ void Widget::refreshEngineerPromptBlock()
 
 void Widget::refreshEngineerPromptPreview()
 {
+    if (appShell_)
+    {
+        appShell_->switchTo(QStringLiteral("engineer"));
+    }
     if (contextDrawer_)
     {
         contextDrawer_->showPanel(QStringLiteral("environment"));

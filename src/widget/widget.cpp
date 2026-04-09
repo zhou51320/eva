@@ -4,6 +4,7 @@
 #include "app_shell.h"
 #include "context_drawer.h"
 #include "chat_workspace_page.h"
+#include "engineer_workspace_page.h"
 #include "core/session/session_controller.h"
 #include "core/toolflow/tool_flow_controller.h"
 #include "service/backend/backend_coordinator.h"
@@ -129,7 +130,14 @@ void Widget::setupWorkspacePages()
         chatWorkspacePage_->setObjectName(QStringLiteral("chatWorkspacePage"));
     }
 
+    if (!engineerWorkspacePage_)
+    {
+        engineerWorkspacePage_ = new EngineerWorkspacePage(appShell_);
+        engineerWorkspacePage_->setObjectName(QStringLiteral("engineerWorkspacePage"));
+    }
+
     appShell_->registerPage(QStringLiteral("chat"), chatWorkspacePage_);
+    appShell_->registerPage(QStringLiteral("engineer"), engineerWorkspacePage_);
     appShell_->switchTo(kDefaultPrimaryRoute);
 }
 
