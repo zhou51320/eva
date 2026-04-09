@@ -6,6 +6,7 @@
 
 #include "widget/app_shell.h"
 #include "widget/context_drawer.h"
+#include "widget/chat_workspace_page.h"
 
 namespace
 {
@@ -140,4 +141,16 @@ TEST_CASE("ContextDrawer switches engineering panels")
 
     CHECK_FALSE(drawer.showPanel(QStringLiteral("missing")));
     CHECK(drawer.currentPanel() == QStringLiteral("skills"));
+}
+
+TEST_CASE("ChatWorkspacePage exposes header and composer hosts")
+{
+    ensureQtApp();
+
+    ChatWorkspacePage page;
+
+    REQUIRE(page.headerHost() != nullptr);
+    REQUIRE(page.sessionListHost() != nullptr);
+    REQUIRE(page.messageHost() != nullptr);
+    REQUIRE(page.composerHost() != nullptr);
 }

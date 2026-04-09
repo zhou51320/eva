@@ -109,6 +109,7 @@ class ToolFlowController;
 class BackendCoordinator;
 class AppShell;
 class ContextDrawer;
+class ChatWorkspacePage;
 
 enum class DockerTargetMode
 {
@@ -1018,6 +1019,7 @@ class Widget : public QWidget
     bool processServerOutputLine(const QString &line); // 按“单行”解析 llama-server 日志（onServerOutput 内部使用）；true=中断后续解析
     void initAppShell();
     void setupContextDrawerPanels();
+    void setupWorkspacePages();
     static QWidget *createPrimaryRoutePlaceholder(const QString &route, QWidget *parent = nullptr);
     Ui::Widget *ui;
     int terminalAutoExpandSize_ = 320;
@@ -1085,6 +1087,7 @@ class Widget : public QWidget
     UiThemeTokens themeTokens_;
     AppShell *appShell_ = nullptr;
     ContextDrawer *contextDrawer_ = nullptr;
+    ChatWorkspacePage *chatWorkspacePage_ = nullptr;
     // 控制器：从 Widget 中剥离会话与工具流逻辑
     SessionController *sessionController_ = nullptr;
     ToolFlowController *toolFlowController_ = nullptr;

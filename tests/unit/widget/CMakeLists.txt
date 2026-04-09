@@ -22,6 +22,9 @@ add_executable(app_shell_tests
     ${CMAKE_SOURCE_DIR}/src/widget/context_drawer.cpp
     ${CMAKE_SOURCE_DIR}/src/widget/context_drawer.h
     ${CMAKE_SOURCE_DIR}/src/widget/context_drawer.ui
+    ${CMAKE_SOURCE_DIR}/src/widget/chat_workspace_page.cpp
+    ${CMAKE_SOURCE_DIR}/src/widget/chat_workspace_page.h
+    ${CMAKE_SOURCE_DIR}/src/widget/chat_workspace_page.ui
 )
 target_link_libraries(app_shell_tests PRIVATE
     Qt5::Core

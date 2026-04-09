@@ -3,6 +3,7 @@
 #include "widget.h"
 #include "app_shell.h"
 #include "context_drawer.h"
+#include "chat_workspace_page.h"
 #include "core/session/session_controller.h"
 #include "core/toolflow/tool_flow_controller.h"
 #include "service/backend/backend_coordinator.h"
@@ -90,6 +91,7 @@ void Widget::initAppShell()
         });
 
     setupContextDrawerPanels();
+    setupWorkspacePages();
 }
 
 void Widget::setupContextDrawerPanels()
@@ -114,6 +116,21 @@ void Widget::setupContextDrawerPanels()
     contextDrawer_->registerPanel(QStringLiteral("environment"), new QWidget(contextDrawer_));
     contextDrawer_->registerPanel(QStringLiteral("skills"), new QWidget(contextDrawer_));
     contextDrawer_->showPanel(QStringLiteral("environment"));
+}
+
+void Widget::setupWorkspacePages()
+{
+    if (!appShell_)
+        return;
+
+    if (!chatWorkspacePage_)
+    {
+        chatWorkspacePage_ = new ChatWorkspacePage(appShell_);
+        chatWorkspacePage_->setObjectName(QStringLiteral("chatWorkspacePage"));
+    }
+
+    appShell_->registerPage(QStringLiteral("chat"), chatWorkspacePage_);
+    appShell_->switchTo(kDefaultPrimaryRoute);
 }
 
 Widget::Widget(QWidget *parent, QString applicationDirPath_)
