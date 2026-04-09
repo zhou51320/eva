@@ -48,6 +48,7 @@ add_executable(
     src/widget/engineer_workspace_page.cpp src/widget/engineer_workspace_page.h src/widget/engineer_workspace_page.ui
     src/widget/knowledge_workspace_page.cpp src/widget/knowledge_workspace_page.h src/widget/knowledge_workspace_page.ui
     src/widget/media_workspace_page.cpp src/widget/media_workspace_page.h src/widget/media_workspace_page.ui
+    src/widget/settings_workspace_page.cpp src/widget/settings_workspace_page.h src/widget/settings_workspace_page.ui
     src/widget/widget_session.cpp
     src/widget/widget_toolflow.cpp
     src/widget/widget_records.cpp

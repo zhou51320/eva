@@ -10,6 +10,7 @@
 #include "widget/engineer_workspace_page.h"
 #include "widget/knowledge_workspace_page.h"
 #include "widget/media_workspace_page.h"
+#include "widget/settings_workspace_page.h"
 
 namespace
 {
@@ -189,4 +190,15 @@ TEST_CASE("MediaWorkspacePage exposes tool tabs and preview host")
     REQUIRE(page.toolTabs() != nullptr);
     REQUIRE(page.parameterHost() != nullptr);
     REQUIRE(page.previewHost() != nullptr);
+}
+
+TEST_CASE("SettingsWorkspacePage exposes search and category navigation")
+{
+    ensureQtApp();
+
+    SettingsWorkspacePage page;
+
+    REQUIRE(page.searchEdit() != nullptr);
+    REQUIRE(page.categoryList() != nullptr);
+    REQUIRE(page.detailHost() != nullptr);
 }
