@@ -1,4 +1,5 @@
 #include "widget.h"
+#include "context_drawer.h"
 #include "ui_widget.h"
 #include <QDate>
 #include <QDateTime>
@@ -916,6 +917,10 @@ void Widget::refreshEngineerPromptBlock()
 
 void Widget::refreshEngineerPromptPreview()
 {
+    if (contextDrawer_)
+    {
+        contextDrawer_->showPanel(QStringLiteral("environment"));
+    }
     if (!isArchitectModeActive()) return;
     if (engineerProxyRuntime_.active) return;
     if (!ui || !ui->engineerConsole) return;

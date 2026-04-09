@@ -1,10 +1,15 @@
 #include "widget.h"
+#include "context_drawer.h"
 #include "ui_widget.h"
 
 void Widget::refreshSkillsUI()
 {
     if (!date_ui || !date_ui->skills_list || !skillManager) return;
     date_ui->skills_list->setSkills(skillManager->skills());
+    if (contextDrawer_)
+    {
+        contextDrawer_->showPanel(QStringLiteral("skills"));
+    }
 }
 
 void Widget::rebuildSkillPrompts()

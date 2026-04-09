@@ -2,6 +2,7 @@
 
 #include "widget.h"
 #include "app_shell.h"
+#include "context_drawer.h"
 #include "core/session/session_controller.h"
 #include "core/toolflow/tool_flow_controller.h"
 #include "service/backend/backend_coordinator.h"
@@ -87,6 +88,32 @@ void Widget::initAppShell()
         [](const QString &route, QWidget *parent) -> QWidget * {
             return createPrimaryRoutePlaceholder(route, parent);
         });
+
+    setupContextDrawerPanels();
+}
+
+void Widget::setupContextDrawerPanels()
+{
+    if (!appShell_)
+        return;
+
+    if (!contextDrawer_)
+    {
+        contextDrawer_ = new ContextDrawer(appShell_);
+        contextDrawer_->setObjectName(QStringLiteral("widgetContextDrawer"));
+    }
+
+    if (appShell_->contextDrawer() && appShell_->contextDrawer()->layout() == nullptr)
+    {
+        QVBoxLayout *drawerLayout = new QVBoxLayout(appShell_->contextDrawer());
+        drawerLayout->setContentsMargins(0, 0, 0, 0);
+        drawerLayout->setSpacing(0);
+        drawerLayout->addWidget(contextDrawer_);
+    }
+
+    contextDrawer_->registerPanel(QStringLiteral("environment"), new QWidget(contextDrawer_));
+    contextDrawer_->registerPanel(QStringLiteral("skills"), new QWidget(contextDrawer_));
+    contextDrawer_->showPanel(QStringLiteral("environment"));
 }
 
 Widget::Widget(QWidget *parent, QString applicationDirPath_)

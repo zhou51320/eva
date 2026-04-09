@@ -19,6 +19,9 @@ add_executable(app_shell_tests
     ${CMAKE_SOURCE_DIR}/src/widget/app_shell.cpp
     ${CMAKE_SOURCE_DIR}/src/widget/app_shell.h
     ${CMAKE_SOURCE_DIR}/src/widget/app_shell.ui
+    ${CMAKE_SOURCE_DIR}/src/widget/context_drawer.cpp
+    ${CMAKE_SOURCE_DIR}/src/widget/context_drawer.h
+    ${CMAKE_SOURCE_DIR}/src/widget/context_drawer.ui
 )
 target_link_libraries(app_shell_tests PRIVATE
     Qt5::Core

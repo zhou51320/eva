@@ -5,6 +5,7 @@
 #include <QLabel>
 
 #include "widget/app_shell.h"
+#include "widget/context_drawer.h"
 
 namespace
 {
@@ -116,4 +117,27 @@ TEST_CASE("AppShell placeholder setup reports only successfully registered route
     CHECK(result.currentRoute == QStringLiteral("chat"));
     CHECK(result.registeredRoutes == QStringList{QStringLiteral("chat"), QStringLiteral("engineer")});
     CHECK_FALSE(shell.switchTo(QStringLiteral("missing")));
+}
+
+TEST_CASE("ContextDrawer switches engineering panels")
+{
+    ensureQtApp();
+
+    ContextDrawer drawer;
+    QWidget environmentPanel;
+    QWidget skillsPanel;
+
+    CHECK(drawer.registerPanel(QStringLiteral("environment"), &environmentPanel));
+    CHECK(drawer.registerPanel(QStringLiteral("skills"), &skillsPanel));
+
+    CHECK(drawer.showPanel(QStringLiteral("environment")));
+    CHECK(drawer.currentPanel() == QStringLiteral("environment"));
+    CHECK(drawer.panelStack()->currentWidget() == &environmentPanel);
+
+    CHECK(drawer.showPanel(QStringLiteral("skills")));
+    CHECK(drawer.currentPanel() == QStringLiteral("skills"));
+    CHECK(drawer.panelStack()->currentWidget() == &skillsPanel);
+
+    CHECK_FALSE(drawer.showPanel(QStringLiteral("missing")));
+    CHECK(drawer.currentPanel() == QStringLiteral("skills"));
 }
