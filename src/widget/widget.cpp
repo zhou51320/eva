@@ -336,7 +336,7 @@ Widget::Widget(QWidget *parent, QString applicationDirPath_)
         {
             globalUiSettings_.fontSizePt = Widget::kDefaultUiFontPt;
         }
-        globalUiSettings_.themeId = QStringLiteral("unit01");
+        globalUiSettings_.themeId = QStringLiteral("modern_light");
     }
     setBaseWindowIcon(QIcon(":/logo/eva.png"));
     ui->set->setIcon(QIcon(":/logo/assimp_tools_icon.ico"));                       // 设置设置图标
@@ -722,6 +722,7 @@ bool Widget::ensureGlobalSettingsDialog()
         const char *id;
     };
     const ThemeMeta themes[] = {
+        {"modern_light"},
         {"unit01"},
         {"unit00"},
         {"unit02"},

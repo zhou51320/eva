@@ -1,0 +1,10 @@
+QWidget {
+    background: #F6F7F9;
+    color: #1F2937;
+}
+
+QFrame#Card {
+    background: #FFFFFF;
+    border: 1px solid #E6E9EF;
+    border-radius: 10px;
+}

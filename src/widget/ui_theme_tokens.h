@@ -5,6 +5,7 @@
 
 #include <QColor>
 #include <QString>
+#include <QStringList>
 
 struct UiThemeTokens
 {
@@ -22,6 +23,19 @@ struct UiThemeTokens
     QColor systemRole = SYSTEM_BLUE;
     QColor assistantRole = LCL_ORANGE;
 };
+
+inline QStringList buildThemeStylesheetPaths(const QString &themeId, bool useLegacyFallback)
+{
+    const QString trimmedId = themeId.trimmed();
+    const QString effective = trimmedId.isEmpty() ? QStringLiteral("modern_light") : trimmedId;
+    QStringList paths;
+    paths << QStringLiteral(":/QSS/theme_%1.qss").arg(effective);
+    if (useLegacyFallback)
+    {
+        paths << QStringLiteral(":/QSS/theme_%1_legacy.qss").arg(effective);
+    }
+    return paths;
+}
 
 inline UiThemeTokens resolveUiThemeTokens(const QString &themeId)
 {
@@ -73,7 +87,26 @@ inline UiThemeTokens resolveUiThemeTokens(const QString &themeId)
         return tokens;
     }
 
-    return UiThemeTokens();
+    if (requestedThemeId == QStringLiteral("modern_light"))
+    {
+        UiThemeTokens tokens;
+        tokens.themeId = QStringLiteral("modern_light");
+        tokens.overlayResourcePath = QStringLiteral(":/QSS/theme_modern_light.qss");
+        tokens.darkBase = false;
+        tokens.textPrimary = QColor("#1f2937");
+        tokens.textSecondary = QColor("#64748b");
+        tokens.stateSignal = QColor("#2563eb");
+        tokens.stateSuccess = QColor("#16a34a");
+        tokens.stateWrong = QColor("#dc2626");
+        tokens.stateEva = QColor("#2563eb");
+        tokens.stateTool = QColor("#0ea5e9");
+        tokens.stateSync = QColor("#f59e0b");
+        tokens.systemRole = tokens.stateSignal;
+        tokens.assistantRole = tokens.stateSync;
+        return tokens;
+    }
+
+    return resolveUiThemeTokens(QStringLiteral("modern_light"));
 }
 
 #endif // UI_THEME_TOKENS_H

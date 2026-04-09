@@ -1,0 +1,8 @@
+QFrame#Card {
+    border-radius: 8px;
+}
+
+QScrollBar:vertical,
+QScrollBar:horizontal {
+    background: #EEF1F5;
+}

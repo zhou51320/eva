@@ -305,6 +305,7 @@ void Widget::updateGlobalSettingsTranslations()
             const char *key;
         };
         const ThemeTranslation translations[] = {
+            {"modern_light", "eva theme modern_light"},
             {"unit01", "eva theme unit01"},
             {"unit00", "eva theme unit00"},
             {"unit02", "eva theme unit02"},
@@ -313,10 +314,11 @@ void Widget::updateGlobalSettingsTranslations()
         for (const ThemeTranslation &translation : translations)
         {
             const int idx = globalThemeCombo_->findData(QString::fromLatin1(translation.id));
-            if (idx >= 0)
-            {
-                globalThemeCombo_->setItemText(idx, jtr(translation.key));
-            }
+            if (idx < 0) continue;
+            const QString translated = jtr(translation.key);
+            QString fallback = QString::fromLatin1(translation.id);
+            if (fallback == QStringLiteral("modern_light")) fallback = QStringLiteral("Modern Light");
+            globalThemeCombo_->setItemText(idx, translated.isEmpty() ? fallback : translated);
         }
     }
 }
@@ -507,7 +509,18 @@ void Widget::refreshApplicationStyles()
     QApplication::setFont(target);
 
     QString composed = baseStylesheet_;
-    if (!themeTokens_.overlayResourcePath.isEmpty())
+    const bool useLegacyFallback = (DeviceManager::currentOsId() == QStringLiteral("win7"));
+    const QStringList themePaths = buildThemeStylesheetPaths(themeTokens_.themeId, useLegacyFallback);
+    for (const QString &path : themePaths)
+    {
+        QFile file(path);
+        if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) continue;
+        const QString overlay = QString::fromUtf8(file.readAll());
+        if (overlay.isEmpty()) continue;
+        if (!composed.isEmpty()) composed.append('\n');
+        composed.append(overlay);
+    }
+    if (!themeTokens_.overlayResourcePath.isEmpty() && !themePaths.contains(themeTokens_.overlayResourcePath))
     {
         QFile file(themeTokens_.overlayResourcePath);
         if (file.open(QIODevice::ReadOnly | QIODevice::Text))

@@ -7,27 +7,27 @@ TEST_CASE("ui theme tokens fall back to default theme for empty theme id")
 {
     const UiThemeTokens tokens = resolveUiThemeTokens(QString());
 
-    CHECK(tokens.themeId == QStringLiteral("unit01"));
-    CHECK(tokens.overlayResourcePath.isEmpty());
-    CHECK(tokens.textPrimary == NORMAL_BLACK);
-    CHECK(tokens.stateEva == SYSTEM_BLUE);
+    CHECK(tokens.themeId == QStringLiteral("modern_light"));
+    CHECK(tokens.overlayResourcePath == QStringLiteral(":/QSS/theme_modern_light.qss"));
+    CHECK(tokens.textPrimary == QColor("#1f2937"));
+    CHECK(tokens.stateEva == QColor("#2563eb"));
 }
 
 TEST_CASE("ui theme tokens fall back to default theme for unknown theme id")
 {
     const UiThemeTokens tokens = resolveUiThemeTokens(QStringLiteral("mystery-theme"));
 
-    CHECK(tokens.themeId == QStringLiteral("unit01"));
-    CHECK(tokens.overlayResourcePath.isEmpty());
+    CHECK(tokens.themeId == QStringLiteral("modern_light"));
+    CHECK(tokens.overlayResourcePath == QStringLiteral(":/QSS/theme_modern_light.qss"));
     CHECK(tokens.darkBase == false);
-    CHECK(tokens.textSecondary == THINK_GRAY);
+    CHECK(tokens.textSecondary == QColor("#64748b"));
 }
 
 TEST_CASE("ui theme tokens keep resolved theme id aligned with fallback token values")
 {
     const UiThemeTokens fallback = resolveUiThemeTokens(QStringLiteral("unknown"));
     const UiThemeTokens empty = resolveUiThemeTokens(QStringLiteral("   "));
-    const UiThemeTokens base = resolveUiThemeTokens(QStringLiteral("unit01"));
+    const UiThemeTokens base = resolveUiThemeTokens(QStringLiteral("modern_light"));
 
     CHECK(fallback.themeId == base.themeId);
     CHECK(empty.themeId == base.themeId);
@@ -56,4 +56,22 @@ TEST_CASE("ui theme tokens preserve known non-default themes")
     CHECK(tokens.darkBase);
     CHECK(tokens.systemRole == tokens.stateSignal);
     CHECK(tokens.assistantRole == tokens.stateSync);
+}
+
+TEST_CASE("theme stylesheet path includes legacy overlay when requested")
+{
+    CHECK(buildThemeStylesheetPaths(QStringLiteral("modern_light"), false) ==
+          QStringList{QStringLiteral(":/QSS/theme_modern_light.qss")});
+    CHECK(buildThemeStylesheetPaths(QStringLiteral("modern_light"), true) ==
+          QStringList{QStringLiteral(":/QSS/theme_modern_light.qss"),
+                      QStringLiteral(":/QSS/theme_modern_light_legacy.qss")});
+}
+
+TEST_CASE("ui theme tokens resolve modern light theme")
+{
+    const UiThemeTokens tokens = resolveUiThemeTokens(QStringLiteral("modern_light"));
+
+    CHECK(tokens.themeId == QStringLiteral("modern_light"));
+    CHECK(tokens.overlayResourcePath == QStringLiteral(":/QSS/theme_modern_light.qss"));
+    CHECK_FALSE(tokens.darkBase);
 }
