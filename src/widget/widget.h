@@ -111,6 +111,8 @@ class AppShell;
 class ContextDrawer;
 class ChatWorkspacePage;
 class EngineerWorkspacePage;
+class KnowledgeWorkspacePage;
+class MediaWorkspacePage;
 
 enum class DockerTargetMode
 {
@@ -1090,6 +1092,8 @@ class Widget : public QWidget
     ContextDrawer *contextDrawer_ = nullptr;
     ChatWorkspacePage *chatWorkspacePage_ = nullptr;
     EngineerWorkspacePage *engineerWorkspacePage_ = nullptr;
+    KnowledgeWorkspacePage *knowledgeWorkspacePage_ = nullptr;
+    MediaWorkspacePage *mediaWorkspacePage_ = nullptr;
     // 控制器：从 Widget 中剥离会话与工具流逻辑
     SessionController *sessionController_ = nullptr;
     ToolFlowController *toolFlowController_ = nullptr;

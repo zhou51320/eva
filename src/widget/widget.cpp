@@ -5,6 +5,8 @@
 #include "context_drawer.h"
 #include "chat_workspace_page.h"
 #include "engineer_workspace_page.h"
+#include "knowledge_workspace_page.h"
+#include "media_workspace_page.h"
 #include "core/session/session_controller.h"
 #include "core/toolflow/tool_flow_controller.h"
 #include "service/backend/backend_coordinator.h"
@@ -136,8 +138,22 @@ void Widget::setupWorkspacePages()
         engineerWorkspacePage_->setObjectName(QStringLiteral("engineerWorkspacePage"));
     }
 
+    if (!knowledgeWorkspacePage_)
+    {
+        knowledgeWorkspacePage_ = new KnowledgeWorkspacePage(appShell_);
+        knowledgeWorkspacePage_->setObjectName(QStringLiteral("knowledgeWorkspacePage"));
+    }
+
+    if (!mediaWorkspacePage_)
+    {
+        mediaWorkspacePage_ = new MediaWorkspacePage(appShell_);
+        mediaWorkspacePage_->setObjectName(QStringLiteral("mediaWorkspacePage"));
+    }
+
     appShell_->registerPage(QStringLiteral("chat"), chatWorkspacePage_);
     appShell_->registerPage(QStringLiteral("engineer"), engineerWorkspacePage_);
+    appShell_->registerPage(QStringLiteral("knowledge"), knowledgeWorkspacePage_);
+    appShell_->registerPage(QStringLiteral("media"), mediaWorkspacePage_);
     appShell_->switchTo(kDefaultPrimaryRoute);
 }
 

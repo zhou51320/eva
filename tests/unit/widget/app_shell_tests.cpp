@@ -8,6 +8,8 @@
 #include "widget/context_drawer.h"
 #include "widget/chat_workspace_page.h"
 #include "widget/engineer_workspace_page.h"
+#include "widget/knowledge_workspace_page.h"
+#include "widget/media_workspace_page.h"
 
 namespace
 {
@@ -165,4 +167,26 @@ TEST_CASE("EngineerWorkspacePage exposes overview cards")
     REQUIRE(page.projectSummaryCard() != nullptr);
     REQUIRE(page.quickActionsCard() != nullptr);
     REQUIRE(page.recentContextCard() != nullptr);
+}
+
+TEST_CASE("KnowledgeWorkspacePage exposes resource list and detail hosts")
+{
+    ensureQtApp();
+
+    KnowledgeWorkspacePage page;
+
+    REQUIRE(page.sidebarHost() != nullptr);
+    REQUIRE(page.listHost() != nullptr);
+    REQUIRE(page.detailHost() != nullptr);
+}
+
+TEST_CASE("MediaWorkspacePage exposes tool tabs and preview host")
+{
+    ensureQtApp();
+
+    MediaWorkspacePage page;
+
+    REQUIRE(page.toolTabs() != nullptr);
+    REQUIRE(page.parameterHost() != nullptr);
+    REQUIRE(page.previewHost() != nullptr);
 }
