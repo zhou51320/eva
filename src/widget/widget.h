@@ -107,6 +107,7 @@ class ControllerOverlay;
 class SessionController;
 class ToolFlowController;
 class BackendCoordinator;
+class AppShell;
 
 enum class DockerTargetMode
 {
@@ -142,8 +143,11 @@ class Widget : public QWidget
     static constexpr int kMaxFontPt = 72;
     static constexpr int kDefaultUiFontPt = 11;
     static constexpr int kDefaultOutputFontPt = 12;
+    static const QString kDefaultPrimaryRoute;
     Widget(QWidget *parent = nullptr, QString applicationDirPath_ = "./");
     ~Widget();
+    AppShell *appShell() const;
+    QString currentPrimaryRoute() const;
     QString applicationDirPath;
     // Engineer tool working directory; default to {applicationDirPath}/EVA_WORK
     QString engineerWorkDir;
@@ -1011,6 +1015,8 @@ class Widget : public QWidget
   private:
     void syncDefaultSystemPrompt(); // 切换语种时刷新默认系统提示词
     bool processServerOutputLine(const QString &line); // 按“单行”解析 llama-server 日志（onServerOutput 内部使用）；true=中断后续解析
+    void initAppShell();
+    static QWidget *createPrimaryRoutePlaceholder(const QString &route, QWidget *parent = nullptr);
     Ui::Widget *ui;
     int terminalAutoExpandSize_ = 320;
     bool terminalCollapsed_ = true;
@@ -1075,6 +1081,7 @@ class Widget : public QWidget
     int outputFontFallbackSizePt_ = kDefaultOutputFontPt;
     bool outputFontResourceLoaded_ = false;
     UiThemeTokens themeTokens_;
+    AppShell *appShell_ = nullptr;
     // 控制器：从 Widget 中剥离会话与工具流逻辑
     SessionController *sessionController_ = nullptr;
     ToolFlowController *toolFlowController_ = nullptr;

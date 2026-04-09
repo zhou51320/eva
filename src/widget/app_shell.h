@@ -3,7 +3,10 @@
 
 #include <QHash>
 #include <QString>
+#include <QStringList>
 #include <QWidget>
+
+#include <functional>
 
 QT_BEGIN_NAMESPACE
 namespace Ui
@@ -22,9 +25,22 @@ class AppShell : public QWidget
     explicit AppShell(QWidget *parent = nullptr);
     ~AppShell() override;
 
+    using PageFactory = std::function<QWidget *(const QString &route, QWidget *parent)>;
+
+    struct RouteSetupResult
+    {
+        QString currentRoute;
+        QStringList registeredRoutes;
+    };
+
     bool registerPage(const QString &route, QWidget *page);
     bool switchTo(const QString &route);
     QString currentRoute() const;
+    QStringList registeredRoutes() const;
+
+    RouteSetupResult ensurePlaceholderRoutes(const QStringList &routes,
+                                             const QString &defaultRoute,
+                                             const PageFactory &factory);
 
     QFrame *navRail() const;
     QFrame *sidePanel() const;

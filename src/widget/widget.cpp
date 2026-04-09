@@ -1,6 +1,7 @@
 // 主函数和主要槽函数
 
 #include "widget.h"
+#include "app_shell.h"
 #include "core/session/session_controller.h"
 #include "core/toolflow/tool_flow_controller.h"
 #include "service/backend/backend_coordinator.h"
@@ -30,6 +31,8 @@
 #include "../utils/textspacing.h"
 #include "../utils/startuplogger.h"
 
+const QString Widget::kDefaultPrimaryRoute = QStringLiteral("chat");
+
 void toggleWindowVisibility(QWidget *w, bool visible)
 {
     if (!w) return;
@@ -44,6 +47,46 @@ void toggleWindowVisibility(QWidget *w, bool visible)
     {
         w->hide();
     }
+}
+
+AppShell *Widget::appShell() const
+{
+    return appShell_;
+}
+
+QString Widget::currentPrimaryRoute() const
+{
+    return appShell_ ? appShell_->currentRoute() : QString();
+}
+
+QWidget *Widget::createPrimaryRoutePlaceholder(const QString &route, QWidget *parent)
+{
+    QLabel *label = new QLabel(route, parent);
+    label->setObjectName(route + QStringLiteral("PrimaryPlaceholder"));
+    label->setAlignment(Qt::AlignCenter);
+    return label;
+}
+
+void Widget::initAppShell()
+{
+    if (!ui || appShell_)
+        return;
+
+    appShell_ = new AppShell(this);
+    appShell_->setObjectName(QStringLiteral("widgetAppShell"));
+    appShell_->hide();
+
+    const QStringList routes = {QStringLiteral("chat"),
+                                QStringLiteral("engineer"),
+                                QStringLiteral("knowledge"),
+                                QStringLiteral("media"),
+                                QStringLiteral("settings")};
+    appShell_->ensurePlaceholderRoutes(
+        routes,
+        kDefaultPrimaryRoute,
+        [](const QString &route, QWidget *parent) -> QWidget * {
+            return createPrimaryRoutePlaceholder(route, parent);
+        });
 }
 
 Widget::Widget(QWidget *parent, QString applicationDirPath_)
@@ -63,6 +106,7 @@ Widget::Widget(QWidget *parent, QString applicationDirPath_)
 
     //---------------初始化ui--------------
     ui->setupUi(this);
+    initAppShell();
     // ??????????
     sessionController_ = new SessionController(this);
     toolFlowController_ = new ToolFlowController(this);

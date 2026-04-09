@@ -59,3 +59,61 @@ TEST_CASE("AppShell normalizes routes consistently across registration and switc
     CHECK(shell.currentRoute() == QStringLiteral("engineer"));
     CHECK(shell.workspaceStack()->currentWidget() == &engineerPage);
 }
+
+TEST_CASE("AppShell placeholder route setup keeps default chat route")
+{
+    ensureQtApp();
+
+    AppShell shell;
+    const QStringList routes = {
+        QStringLiteral("chat"),
+        QStringLiteral("engineer"),
+        QStringLiteral("knowledge"),
+        QStringLiteral("media"),
+        QStringLiteral("settings")};
+
+    const auto result = shell.ensurePlaceholderRoutes(
+        routes,
+        QStringLiteral("chat"),
+        [](const QString &route, QWidget *parent) -> QWidget * {
+            QLabel *label = new QLabel(route, parent);
+            label->setObjectName(route + QStringLiteral("PrimaryPlaceholder"));
+            label->setAlignment(Qt::AlignCenter);
+            return label;
+        });
+
+    CHECK(result.currentRoute == QStringLiteral("chat"));
+    CHECK(result.registeredRoutes == routes);
+    CHECK(shell.currentRoute() == QStringLiteral("chat"));
+
+    for (const QString &route : routes)
+    {
+        INFO(route.toStdString());
+        CHECK(shell.switchTo(route));
+        QWidget *page = shell.workspaceStack()->currentWidget();
+        REQUIRE(page != nullptr);
+        CHECK(page->objectName() == route + QStringLiteral("PrimaryPlaceholder"));
+    }
+}
+
+TEST_CASE("AppShell placeholder setup reports only successfully registered routes")
+{
+    ensureQtApp();
+
+    AppShell shell;
+    QWidget existingChat;
+    REQUIRE(shell.registerPage(QStringLiteral("chat"), &existingChat));
+
+    const auto result = shell.ensurePlaceholderRoutes(
+        {QStringLiteral(" chat "), QStringLiteral("missing"), QStringLiteral("engineer")},
+        QStringLiteral("chat"),
+        [](const QString &route, QWidget *parent) -> QWidget * {
+            if (route == QStringLiteral("missing"))
+                return nullptr;
+            return new QLabel(route, parent);
+        });
+
+    CHECK(result.currentRoute == QStringLiteral("chat"));
+    CHECK(result.registeredRoutes == QStringList{QStringLiteral("chat"), QStringLiteral("engineer")});
+    CHECK_FALSE(shell.switchTo(QStringLiteral("missing")));
+}

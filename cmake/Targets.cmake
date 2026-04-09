@@ -42,6 +42,7 @@ add_executable(
     src/service/tools/tool_registry.h
     src/main.cpp
     src/widget/widget.cpp
+    src/widget/app_shell.cpp src/widget/app_shell.h src/widget/app_shell.ui
     src/widget/widget_session.cpp
     src/widget/widget_toolflow.cpp
     src/widget/widget_records.cpp

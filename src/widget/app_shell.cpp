@@ -5,6 +5,8 @@
 #include <QFrame>
 #include <QStackedWidget>
 
+#include <algorithm>
+
 AppShell::AppShell(QWidget *parent)
     : QWidget(parent), ui(new Ui::AppShell)
 {
@@ -52,6 +54,51 @@ bool AppShell::switchTo(const QString &route)
 QString AppShell::currentRoute() const
 {
     return currentRoute_;
+}
+
+QStringList AppShell::registeredRoutes() const
+{
+    QStringList routes = pages_.keys();
+    std::sort(routes.begin(), routes.end());
+    return routes;
+}
+
+AppShell::RouteSetupResult AppShell::ensurePlaceholderRoutes(const QStringList &routes,
+                                                             const QString &defaultRoute,
+                                                             const PageFactory &factory)
+{
+    RouteSetupResult result;
+
+    for (const QString &route : routes)
+    {
+        const QString normalizedRoute = normalizeRoute(route);
+        if (normalizedRoute.isEmpty())
+            continue;
+
+        if (pages_.contains(normalizedRoute))
+        {
+            result.registeredRoutes.append(normalizedRoute);
+            continue;
+        }
+
+        QWidget *page = factory ? factory(normalizedRoute, this) : nullptr;
+        if (registerPage(normalizedRoute, page))
+        {
+            result.registeredRoutes.append(normalizedRoute);
+            continue;
+        }
+
+        if (page && page->parent() == this)
+            delete page;
+    }
+
+    const QString normalizedDefaultRoute = normalizeRoute(defaultRoute);
+    if (!normalizedDefaultRoute.isEmpty())
+        switchTo(normalizedDefaultRoute);
+
+    result.currentRoute = currentRoute_;
+    result.registeredRoutes.removeDuplicates();
+    return result;
 }
 
 QFrame *AppShell::navRail() const
