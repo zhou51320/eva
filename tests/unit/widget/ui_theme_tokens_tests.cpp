@@ -1,7 +1,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest.h>
 
-#include "widget/ui_theme_tokens.h"
+#include "widget/theme_tokens.h"
 
 TEST_CASE("ui theme tokens fall back to default theme for empty theme id")
 {

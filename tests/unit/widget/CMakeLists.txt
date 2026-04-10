@@ -1,10 +1,5 @@
 find_package(Qt5 COMPONENTS Core Gui Widgets REQUIRED)
 
-set_source_files_properties(
-    ui_theme_tokens_tests.cpp
-    PROPERTIES SKIP_AUTOUIC ON
-)
-
 add_executable(ui_theme_tokens_tests
     ui_theme_tokens_tests.cpp
 )

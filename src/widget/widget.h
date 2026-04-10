@@ -91,7 +91,7 @@
 #include "../xconfig.h"  // ui和bot都要导入的共有配置
 #include "thirdparty/QHotkey/QHotkey/qhotkey.h"
 #include "skill_drop_area.h"
-#include "ui_theme_tokens.h"
+#include "theme_tokens.h"
 
 QT_BEGIN_NAMESPACE
 namespace Ui
