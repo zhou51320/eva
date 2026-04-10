@@ -1,10 +1,5 @@
 find_package(Qt5 COMPONENTS Core Gui Widgets REQUIRED)
 
-set_source_files_properties(
-    ${CMAKE_SOURCE_DIR}/src/widget/app_shell.cpp
-    PROPERTIES SKIP_AUTOUIC ON
-)
-
 add_executable(ui_theme_tokens_tests
     ui_theme_tokens_tests.cpp
 )
@@ -18,25 +13,18 @@ add_executable(app_shell_tests
     app_shell_tests.cpp
     ${CMAKE_SOURCE_DIR}/src/widget/app_shell.cpp
     ${CMAKE_SOURCE_DIR}/src/widget/app_shell.h
-    ${CMAKE_SOURCE_DIR}/src/widget/app_shell.ui
     ${CMAKE_SOURCE_DIR}/src/widget/context_drawer.cpp
     ${CMAKE_SOURCE_DIR}/src/widget/context_drawer.h
-    ${CMAKE_SOURCE_DIR}/src/widget/context_drawer.ui
     ${CMAKE_SOURCE_DIR}/src/widget/chat_workspace_page.cpp
     ${CMAKE_SOURCE_DIR}/src/widget/chat_workspace_page.h
-    ${CMAKE_SOURCE_DIR}/src/widget/chat_workspace_page.ui
     ${CMAKE_SOURCE_DIR}/src/widget/engineer_workspace_page.cpp
     ${CMAKE_SOURCE_DIR}/src/widget/engineer_workspace_page.h
-    ${CMAKE_SOURCE_DIR}/src/widget/engineer_workspace_page.ui
     ${CMAKE_SOURCE_DIR}/src/widget/knowledge_workspace_page.cpp
     ${CMAKE_SOURCE_DIR}/src/widget/knowledge_workspace_page.h
-    ${CMAKE_SOURCE_DIR}/src/widget/knowledge_workspace_page.ui
     ${CMAKE_SOURCE_DIR}/src/widget/media_workspace_page.cpp
     ${CMAKE_SOURCE_DIR}/src/widget/media_workspace_page.h
-    ${CMAKE_SOURCE_DIR}/src/widget/media_workspace_page.ui
     ${CMAKE_SOURCE_DIR}/src/widget/settings_workspace_page.cpp
     ${CMAKE_SOURCE_DIR}/src/widget/settings_workspace_page.h
-    ${CMAKE_SOURCE_DIR}/src/widget/settings_workspace_page.ui
 )
 target_link_libraries(app_shell_tests PRIVATE
     Qt5::Core
