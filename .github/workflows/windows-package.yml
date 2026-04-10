@@ -59,13 +59,67 @@ jobs:
           cmake -S . -B $env:BUILD_DIR -G Ninja
           -DCMAKE_BUILD_TYPE=Release
           -DBODY_PACK=ON
-          -DBODY_SKIP_WINDEPLOYQT=OFF
+          -DBODY_SKIP_WINDEPLOYQT=ON
           -DEVA_ENABLE_QT_TTS=OFF
           -DEVA_ENABLE_UNIT_TESTS=OFF
           -DEVA_ENABLE_FUNCTIONAL_TESTS=OFF
 
       - name: Build
         run: cmake --build $env:BUILD_DIR --config Release --parallel
+
+      - name: Deploy Qt runtime manually
+        run: |
+          $binDir = Join-Path $pwd "$env:BUILD_DIR/bin"
+          $qtBinDir = & qmake -query QT_INSTALL_BINS
+          $qtPluginsDir = & qmake -query QT_INSTALL_PLUGINS
+          $mingwBinDir = Split-Path (Get-Command gcc.exe).Source -Parent
+
+          if (-not (Test-Path $binDir)) {
+            throw "Build output directory missing: $binDir"
+          }
+          if (-not (Test-Path $qtBinDir)) {
+            throw "Qt bin directory missing: $qtBinDir"
+          }
+          if (-not (Test-Path $qtPluginsDir)) {
+            throw "Qt plugins directory missing: $qtPluginsDir"
+          }
+
+          $qtDlls = @(
+            'Qt5Core.dll',
+            'Qt5Gui.dll',
+            'Qt5Multimedia.dll',
+            'Qt5MultimediaWidgets.dll',
+            'Qt5Network.dll',
+            'Qt5Sql.dll',
+            'Qt5Widgets.dll'
+          )
+          foreach ($dll in $qtDlls) {
+            $src = Join-Path $qtBinDir $dll
+            if (-not (Test-Path $src)) {
+              throw "Required Qt DLL missing: $src"
+            }
+            Copy-Item $src $binDir -Force
+          }
+
+          $pluginDirs = @('platforms', 'sqldrivers', 'styles', 'imageformats', 'audio', 'mediaservice')
+          foreach ($pluginDir in $pluginDirs) {
+            $srcDir = Join-Path $qtPluginsDir $pluginDir
+            if (Test-Path $srcDir) {
+              Copy-Item $srcDir $binDir -Recurse -Force
+            }
+          }
+
+          $mingwRuntimeDlls = @(
+            'libgcc_s_seh-1.dll',
+            'libstdc++-6.dll',
+            'libwinpthread-1.dll'
+          )
+          foreach ($dll in $mingwRuntimeDlls) {
+            $src = Join-Path $mingwBinDir $dll
+            if (Test-Path $src) {
+              Copy-Item $src $binDir -Force
+            }
+          }
 
       - name: Stage package directory
         run: |
