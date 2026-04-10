@@ -255,7 +255,7 @@ Skills are pluggable capability bundles introduced into EVA under the covenant f
     - During runtime, EVA only enumerates devices and searches for executable files in the same architecture directory of the local machine, and automatically completes the library search path (Windows: PATH; Linux: LD_LIBRARY_PATH).
 
 5. Packaging and distribution (ready to use after decompression)
-   
+
    - Package the executable (build/bin/eva[.exe]), the同级 directory `EVA_BACKEND/`, necessary third-party components and resources, and the optional `EVA_MODELS/` together;
    - Directory example:
      - `EVA_BACKEND/<arch>/<os>/<device>/llama.cpp/llama-server(.exe)`
@@ -263,6 +263,23 @@ Skills are pluggable capability bundles introduced into EVA under the covenant f
      - `EVA_BACKEND/<arch>/<os>/<device>/llama-tts/llama-tts(.exe)`
      - `EVA_MODELS/{llm,embedding,speech2text,text2speech,text2image}/...`
    - The program will create `EVA_TEMP/` in the same directory on first startup to save configurations, history, and intermediate products.
+
+### GitHub Actions Windows packaging
+
+The repository provides a dedicated Windows packaging workflow at `.github/workflows/windows-package.yml`.
+
+Usage:
+
+1. Open GitHub Actions
+2. Manually trigger `Windows Package`
+3. Download the artifact `eva-b8149-win7-x64`
+4. After unzip, the package contains:
+   - `eva-b8149-x86.exe`
+   - `EVA_BACKEND/`
+   - `EVA_SKILLS/`
+   - optional `EVA_MODELS/`
+
+This package targets Win7 64-bit usage and is built with MinGW + Qt 5.15.
 
 </details>
 

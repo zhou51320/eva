@@ -1,0 +1,119 @@
+name: Windows Package
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      BUILD_DIR: build
+      PACKAGE_DIR: package-root/eva-b8149-win7-x64
+      PACKAGE_ZIP: eva-b8149-win7-x64.zip
+      BUILT_EXE_NAME: eva-b8149-x86.exe
+      EVA_EXE_NAME: eva-b8149-x86.exe
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up MinGW
+        uses: egor-tensin/setup-mingw@v2
+        with:
+          platform: x64
+
+      - name: Set up CMake
+        uses: jwlawson/actions-setup-cmake@v2
+
+      - name: Set up Ninja
+        uses: seanmiddleditch/gha-setup-ninja@v5
+
+      - name: Install Qt 5.15 (MinGW)
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '5.15.2'
+          host: 'windows'
+          target: 'desktop'
+          arch: 'win64_mingw81'
+          cache: true
+
+      - name: Configure CMake
+        run: >-
+          cmake -S . -B $env:BUILD_DIR -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DBODY_PACK=ON
+          -DBODY_SKIP_WINDEPLOYQT=OFF
+          -DEVA_ENABLE_QT_TTS=OFF
+          -DEVA_ENABLE_UNIT_TESTS=OFF
+          -DEVA_ENABLE_FUNCTIONAL_TESTS=OFF
+
+      - name: Build
+        run: cmake --build $env:BUILD_DIR --config Release --parallel
+
+      - name: Stage package directory
+        run: |
+          $packageDir = Join-Path $pwd $env:PACKAGE_DIR
+          New-Item -ItemType Directory -Force -Path $packageDir | Out-Null
+
+          $binDir = Join-Path $pwd "$env:BUILD_DIR/bin"
+          $builtExe = Join-Path $binDir $env:BUILT_EXE_NAME
+          if (-not (Test-Path $builtExe)) {
+            throw "Expected built executable not found: $builtExe"
+          }
+
+          Copy-Item "$binDir\*" $packageDir -Recurse -Force
+
+          $packagedExe = Join-Path $packageDir $env:EVA_EXE_NAME
+          if (-not (Test-Path $packagedExe)) {
+            throw "Packaged executable missing after copy: $packagedExe"
+          }
+
+      - name: Validate packaged runtime directories
+        run: |
+          $packageDir = Join-Path $pwd $env:PACKAGE_DIR
+
+          $backendDir = Join-Path $packageDir "EVA_BACKEND"
+          if (-not (Test-Path $backendDir)) {
+            throw "EVA_BACKEND was not packaged into the Windows artifact"
+          }
+
+          $skillsDir = Join-Path $packageDir "EVA_SKILLS"
+          if (-not (Test-Path $skillsDir)) {
+            Write-Warning "EVA_SKILLS is missing; creating empty directory in package"
+            New-Item -ItemType Directory -Force -Path $skillsDir | Out-Null
+          }
+
+          $modelsDir = Join-Path $packageDir "EVA_MODELS"
+          if (-not (Test-Path $modelsDir)) {
+            Write-Host "EVA_MODELS not present in package; continuing"
+          }
+
+          $exePath = Join-Path $packageDir $env:EVA_EXE_NAME
+          if (-not (Test-Path $exePath)) {
+            throw "Packaged executable missing: $exePath"
+          }
+
+          $platformPlugin = Join-Path $packageDir "platforms/qwindows.dll"
+          if (-not (Test-Path $platformPlugin)) {
+            throw "Qt platform plugin missing from package: $platformPlugin"
+          }
+
+      - name: Create zip artifact
+        run: |
+          $zipPath = Join-Path $pwd $env:PACKAGE_ZIP
+          if (Test-Path $zipPath) {
+            Remove-Item $zipPath -Force
+          }
+          Compress-Archive -Path (Join-Path $pwd $env:PACKAGE_DIR) -DestinationPath $zipPath
+
+      - name: Upload Windows package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: eva-b8149-win7-x64
+          path: ${{ env.PACKAGE_ZIP }}
+          if-no-files-found: error

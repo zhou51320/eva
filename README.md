@@ -211,6 +211,23 @@
       - `EVA_MODELS/{llm,embedding,speech2text,text2speech,text2image}/...`
     - 程序首次启动会在同级目录创建 `EVA_TEMP/`，用于保存配置、历史与中间产物。
 
+### GitHub Actions Windows 打包
+
+仓库提供独立的 Windows 打包工作流：`.github/workflows/windows-package.yml`。
+
+使用方式：
+
+1. 进入 GitHub Actions
+2. 手动触发 `Windows Package`
+3. 下载产物 `eva-b8149-win7-x64`
+4. 解压后可得到：
+   - `eva-b8149-x86.exe`
+   - `EVA_BACKEND/`
+   - `EVA_SKILLS/`
+   - 可选 `EVA_MODELS/`
+
+该包面向 Win7 64 位使用场景，使用 MinGW + Qt 5.15 构建。
+
 </details>
 
 
