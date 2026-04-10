@@ -51,7 +51,7 @@ jobs:
           host: 'windows'
           target: 'desktop'
           arch: 'win64_mingw81'
-          modules: 'qtscript qtmultimedia'
+          modules: 'qtscript'
           cache: true
 
       - name: Configure CMake
