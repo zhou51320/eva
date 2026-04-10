@@ -3,6 +3,7 @@
 
 #include <QApplication>
 #include <QLabel>
+#include <QStackedWidget>
 
 #include "widget/app_shell.h"
 #include "widget/context_drawer.h"
