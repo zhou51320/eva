@@ -122,6 +122,9 @@ set_source_files_properties(
 set_source_files_properties(
     src/service/backend/backend_coordinator.cpp
     PROPERTIES SKIP_AUTOUIC ON)
+set_source_files_properties(
+    src/widget/widget.h
+    PROPERTIES SKIP_AUTOUIC ON)
 ## Executable name
 # Linux: keep binary name as plain "eva" for runtime/AppDir consistency
 # Other platforms: keep the versioned/output-friendly name
