@@ -19,6 +19,11 @@ QApplication *ensureQtApp()
 {
     static int argc = 0;
     static char **argv = nullptr;
+    static bool envReady = [] {
+        qputenv("QT_QPA_PLATFORM", QByteArray("offscreen"));
+        return true;
+    }();
+    Q_UNUSED(envReady);
     static QApplication app(argc, argv);
     return &app;
 }
