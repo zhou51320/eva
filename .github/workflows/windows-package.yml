@@ -25,10 +25,18 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up MinGW
-        uses: egor-tensin/setup-mingw@v2
+      - name: Set up MSYS2 MinGW
+        uses: msys2/setup-msys2@v2
         with:
-          platform: x64
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-ninja
+
+      - name: Add MinGW to PATH
+        run: |
+          Add-Content -Path $env:GITHUB_PATH -Value 'C:\msys64\mingw64\bin'
 
       - name: Set up CMake
         uses: jwlawson/actions-setup-cmake@v2
