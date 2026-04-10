@@ -1,4 +1,5 @@
 #include "widget.h"
+#include "app_shell.h"
 #include "context_drawer.h"
 #include "engineer_workspace_page.h"
 #include "ui_widget.h"
