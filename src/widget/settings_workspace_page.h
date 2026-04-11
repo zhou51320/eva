@@ -21,9 +21,9 @@ class SettingsWorkspacePage : public QWidget
     explicit SettingsWorkspacePage(QWidget *parent = nullptr);
     ~SettingsWorkspacePage() override;
 
-    QLineEdit *searchEdit() const;
-    QListWidget *categoryList() const;
-    QFrame *detailHost() const;
+    QLineEdit *settingsSearchEdit() const;
+    QListWidget *settingsCategoryList() const;
+    QFrame *detailCardHost() const;
 
   private:
     Ui::SettingsWorkspacePage *ui;

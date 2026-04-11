@@ -13,17 +13,22 @@ KnowledgeWorkspacePage::~KnowledgeWorkspacePage()
     delete ui;
 }
 
-QFrame *KnowledgeWorkspacePage::sidebarHost() const
+QFrame *KnowledgeWorkspacePage::filterBarHost() const
 {
-    return ui->sidebarHost;
+    return ui->knowledgeFilterBar;
 }
 
-QFrame *KnowledgeWorkspacePage::listHost() const
+QFrame *KnowledgeWorkspacePage::collectionListHost() const
 {
-    return ui->listHost;
+    return ui->knowledgeCollectionList;
 }
 
-QFrame *KnowledgeWorkspacePage::detailHost() const
+QFrame *KnowledgeWorkspacePage::detailCardHost() const
 {
-    return ui->detailHost;
+    return ui->knowledgeDetailCard;
+}
+
+QFrame *KnowledgeWorkspacePage::statusCardHost() const
+{
+    return ui->knowledgeStatusCard;
 }

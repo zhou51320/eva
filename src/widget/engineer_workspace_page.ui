@@ -2,9 +2,9 @@
 <ui version="4.0">
  <class>EngineerWorkspacePage</class>
  <widget class="QWidget" name="EngineerWorkspacePage">
-  <layout class="QVBoxLayout" name="rootLayout">
+  <layout class="QHBoxLayout" name="rootLayout">
    <property name="spacing">
-    <number>6</number>
+    <number>12</number>
    </property>
    <property name="leftMargin">
     <number>0</number>
@@ -19,25 +19,57 @@
     <number>0</number>
    </property>
    <item>
-    <widget class="QFrame" name="projectSummaryCard">
+    <widget class="QFrame" name="engineerListColumn">
+     <property name="minimumWidth">
+      <number>280</number>
+     </property>
+     <property name="maximumWidth">
+      <number>360</number>
+     </property>
      <property name="frameShape">
       <enum>QFrame::StyledPanel</enum>
      </property>
     </widget>
    </item>
    <item>
-    <widget class="QFrame" name="quickActionsCard">
-     <property name="frameShape">
-      <enum>QFrame::StyledPanel</enum>
+    <layout class="QVBoxLayout" name="detailLayout">
+     <property name="spacing">
+      <number>12</number>
      </property>
-    </widget>
-   </item>
-   <item>
-    <widget class="QFrame" name="recentContextCard">
-     <property name="frameShape">
-      <enum>QFrame::StyledPanel</enum>
-     </property>
-    </widget>
+     <item>
+      <widget class="QFrame" name="engineerSummaryCard">
+       <property name="minimumHeight">
+        <number>108</number>
+       </property>
+       <property name="frameShape">
+        <enum>QFrame::StyledPanel</enum>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QFrame" name="engineerTaskDetailCard">
+       <property name="minimumHeight">
+        <number>180</number>
+       </property>
+       <property name="frameShape">
+        <enum>QFrame::StyledPanel</enum>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QFrame" name="engineerOutputCard">
+       <property name="frameShape">
+        <enum>QFrame::StyledPanel</enum>
+       </property>
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+         <horstretch>0</horstretch>
+         <verstretch>1</verstretch>
+        </sizepolicy>
+       </property>
+      </widget>
+     </item>
+    </layout>
    </item>
   </layout>
  </widget>

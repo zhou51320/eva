@@ -1,10 +1,113 @@
 QWidget {
-    background: #F6F7F9;
+    background: #F4F7FB;
     color: #1F2937;
 }
 
+QWidget#widgetAppShell,
+QWidget#chatWorkspacePage,
+QWidget#engineerWorkspacePage,
+QWidget#knowledgeWorkspacePage,
+QWidget#mediaWorkspacePage,
+QWidget#settingsWorkspacePage {
+    background: #F4F7FB;
+}
+
+QFrame#navRail,
+QFrame#sidePanel,
+QFrame#drawerHeader,
+QFrame#drawerControls,
+QFrame#chatTopBar,
+QFrame#chatSessionMetaBar,
+QFrame#chatMessageViewport,
+QFrame#chatComposerCard,
+QFrame#engineerListColumn,
+QFrame#engineerSummaryCard,
+QFrame#engineerTaskDetailCard,
+QFrame#engineerOutputCard,
+QFrame#knowledgeFilterBar,
+QFrame#knowledgeCollectionList,
+QFrame#knowledgeDetailCard,
+QFrame#knowledgeStatusCard,
+QFrame#mediaTaskListColumn,
+QFrame#mediaParameterCard,
+QFrame#mediaPreviewCard,
+QFrame#mediaResultCard,
+QFrame#settingsDetailCard,
 QFrame#Card {
     background: #FFFFFF;
-    border: 1px solid #E6E9EF;
-    border-radius: 10px;
+    border: 1px solid #E5E7EB;
+    border-radius: 18px;
+}
+
+QFrame#navRail {
+    border-radius: 22px;
+}
+
+QLineEdit,
+QPlainTextEdit,
+QTextEdit,
+QComboBox,
+QSpinBox,
+QFontComboBox {
+    background: #FFFFFF;
+    border: 1px solid #D1D5DB;
+    border-radius: 16px;
+    padding: 8px 12px;
+    selection-background-color: #DBEAFE;
+    selection-color: #1F2937;
+}
+
+QListWidget,
+QTreeWidget,
+QTableView,
+QListView {
+    background: #FFFFFF;
+    border: 1px solid #E5E7EB;
+    border-radius: 18px;
+    outline: 0;
+    padding: 6px;
+}
+
+QListWidget::item,
+QListView::item {
+    margin: 4px;
+    padding: 10px 12px;
+    border-radius: 14px;
+}
+
+QListWidget::item:selected,
+QListView::item:selected {
+    background: #EFF6FF;
+    border: 1px solid #BFDBFE;
+    color: #1E3A8A;
+}
+
+QPushButton {
+    background: #FFFFFF;
+    border: 1px solid #D1D5DB;
+    border-radius: 999px;
+    padding: 8px 14px;
+}
+
+QPushButton:hover {
+    background: #EFF6FF;
+    border-color: #93C5FD;
+}
+
+QPushButton:pressed {
+    background: #DBEAFE;
+}
+
+QScrollBar:vertical,
+QScrollBar:horizontal {
+    background: transparent;
+    border: none;
+}
+
+QScrollBar::handle:vertical,
+QScrollBar::handle:horizontal {
+    background: #CBD5E1;
+    border-radius: 6px;
+    min-height: 24px;
+    min-width: 24px;
 }

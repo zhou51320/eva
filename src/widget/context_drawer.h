@@ -10,6 +10,7 @@ namespace Ui
 {
 class ContextDrawer;
 }
+class QFrame;
 class QStackedWidget;
 QT_END_NAMESPACE
 
@@ -24,6 +25,8 @@ class ContextDrawer : public QWidget
     bool registerPanel(const QString &name, QWidget *panel);
     bool showPanel(const QString &name);
     QString currentPanel() const;
+    QFrame *drawerHeader() const;
+    QFrame *drawerControls() const;
     QStackedWidget *panelStack() const;
 
   private:

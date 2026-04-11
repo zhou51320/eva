@@ -3,7 +3,9 @@
 #include "ui_app_shell.h"
 
 #include <QFrame>
+#include <QPushButton>
 #include <QStackedWidget>
+#include <QVBoxLayout>
 
 #include <algorithm>
 
@@ -11,6 +13,35 @@ AppShell::AppShell(QWidget *parent)
     : QWidget(parent), ui(new Ui::AppShell)
 {
     ui->setupUi(this);
+
+    ui->rootLayout->setStretch(0, 1);
+    ui->rootLayout->setStretch(1, 4);
+    ui->rootLayout->setStretch(2, 9);
+
+    auto *navLayout = new QVBoxLayout(ui->navRail);
+    navLayout->setContentsMargins(0, 0, 0, 0);
+    navLayout->setSpacing(10);
+
+    const QList<QPair<QString, QString>> routes = {
+        {QStringLiteral("Chat"), QStringLiteral("chat")},
+        {QStringLiteral("Eng"), QStringLiteral("engineer")},
+        {QStringLiteral("KB"), QStringLiteral("knowledge")},
+        {QStringLiteral("Media"), QStringLiteral("media")},
+        {QStringLiteral("Set"), QStringLiteral("settings")}};
+
+    for (const auto &entry : routes)
+    {
+        auto *button = new QPushButton(entry.first, ui->navRail);
+        button->setObjectName(entry.second + QStringLiteral("NavButton"));
+        button->setCheckable(true);
+        navButtons_.insert(entry.second, button);
+        navLayout->addWidget(button);
+        connect(button, &QPushButton::clicked, this, [this, route = entry.second]() {
+            switchTo(route);
+        });
+    }
+
+    navLayout->addStretch(1);
 }
 
 AppShell::~AppShell()
@@ -48,6 +79,13 @@ bool AppShell::switchTo(const QString &route)
 
     ui->workspaceStack->setCurrentWidget(page);
     currentRoute_ = normalizedRoute;
+
+    for (auto it = navButtons_.begin(); it != navButtons_.end(); ++it)
+    {
+        if (it.value())
+            it.value()->setChecked(it.key() == currentRoute_);
+    }
+
     return true;
 }
 

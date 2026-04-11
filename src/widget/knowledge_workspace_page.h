@@ -19,9 +19,10 @@ class KnowledgeWorkspacePage : public QWidget
     explicit KnowledgeWorkspacePage(QWidget *parent = nullptr);
     ~KnowledgeWorkspacePage() override;
 
-    QFrame *sidebarHost() const;
-    QFrame *listHost() const;
-    QFrame *detailHost() const;
+    QFrame *filterBarHost() const;
+    QFrame *collectionListHost() const;
+    QFrame *detailCardHost() const;
+    QFrame *statusCardHost() const;
 
   private:
     Ui::KnowledgeWorkspacePage *ui;

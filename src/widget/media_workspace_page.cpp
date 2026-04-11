@@ -13,17 +13,22 @@ MediaWorkspacePage::~MediaWorkspacePage()
     delete ui;
 }
 
-QTabWidget *MediaWorkspacePage::toolTabs() const
+QFrame *MediaWorkspacePage::taskListColumnHost() const
 {
-    return ui->toolTabs;
+    return ui->mediaTaskListColumn;
 }
 
-QFrame *MediaWorkspacePage::parameterHost() const
+QFrame *MediaWorkspacePage::parameterCardHost() const
 {
-    return ui->parameterHost;
+    return ui->mediaParameterCard;
 }
 
-QFrame *MediaWorkspacePage::previewHost() const
+QFrame *MediaWorkspacePage::previewCardHost() const
 {
-    return ui->previewHost;
+    return ui->mediaPreviewCard;
+}
+
+QFrame *MediaWorkspacePage::resultCardHost() const
+{
+    return ui->mediaResultCard;
 }

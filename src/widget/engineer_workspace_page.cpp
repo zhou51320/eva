@@ -13,17 +13,22 @@ EngineerWorkspacePage::~EngineerWorkspacePage()
     delete ui;
 }
 
-QFrame *EngineerWorkspacePage::projectSummaryCard() const
+QFrame *EngineerWorkspacePage::listColumnHost() const
 {
-    return ui->projectSummaryCard;
+    return ui->engineerListColumn;
 }
 
-QFrame *EngineerWorkspacePage::quickActionsCard() const
+QFrame *EngineerWorkspacePage::summaryCardHost() const
 {
-    return ui->quickActionsCard;
+    return ui->engineerSummaryCard;
 }
 
-QFrame *EngineerWorkspacePage::recentContextCard() const
+QFrame *EngineerWorkspacePage::detailCardHost() const
 {
-    return ui->recentContextCard;
+    return ui->engineerTaskDetailCard;
+}
+
+QFrame *EngineerWorkspacePage::outputCardHost() const
+{
+    return ui->engineerOutputCard;
 }

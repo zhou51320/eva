@@ -13,17 +13,17 @@ SettingsWorkspacePage::~SettingsWorkspacePage()
     delete ui;
 }
 
-QLineEdit *SettingsWorkspacePage::searchEdit() const
+QLineEdit *SettingsWorkspacePage::settingsSearchEdit() const
 {
-    return ui->searchEdit;
+    return ui->settingsSearchEdit;
 }
 
-QListWidget *SettingsWorkspacePage::categoryList() const
+QListWidget *SettingsWorkspacePage::settingsCategoryList() const
 {
-    return ui->categoryList;
+    return ui->settingsCategoryList;
 }
 
-QFrame *SettingsWorkspacePage::detailHost() const
+QFrame *SettingsWorkspacePage::detailCardHost() const
 {
-    return ui->detailHost;
+    return ui->settingsDetailCard;
 }

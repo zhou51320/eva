@@ -2,7 +2,6 @@
 #define MEDIA_WORKSPACE_PAGE_H
 
 #include <QFrame>
-#include <QTabWidget>
 #include <QWidget>
 
 QT_BEGIN_NAMESPACE
@@ -20,9 +19,10 @@ class MediaWorkspacePage : public QWidget
     explicit MediaWorkspacePage(QWidget *parent = nullptr);
     ~MediaWorkspacePage() override;
 
-    QTabWidget *toolTabs() const;
-    QFrame *parameterHost() const;
-    QFrame *previewHost() const;
+    QFrame *taskListColumnHost() const;
+    QFrame *parameterCardHost() const;
+    QFrame *previewCardHost() const;
+    QFrame *resultCardHost() const;
 
   private:
     Ui::MediaWorkspacePage *ui;

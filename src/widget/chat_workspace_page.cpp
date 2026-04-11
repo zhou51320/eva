@@ -13,22 +13,22 @@ ChatWorkspacePage::~ChatWorkspacePage()
     delete ui;
 }
 
-QFrame *ChatWorkspacePage::headerHost() const
+QFrame *ChatWorkspacePage::topBarHost() const
 {
-    return ui->headerHost;
+    return ui->chatTopBar;
 }
 
-QFrame *ChatWorkspacePage::sessionListHost() const
+QFrame *ChatWorkspacePage::sessionMetaHost() const
 {
-    return ui->sessionListHost;
+    return ui->chatSessionMetaBar;
 }
 
-QFrame *ChatWorkspacePage::messageHost() const
+QFrame *ChatWorkspacePage::messageViewportHost() const
 {
-    return ui->messageHost;
+    return ui->chatMessageViewport;
 }
 
-QFrame *ChatWorkspacePage::composerHost() const
+QFrame *ChatWorkspacePage::composerCardHost() const
 {
-    return ui->composerHost;
+    return ui->chatComposerCard;
 }

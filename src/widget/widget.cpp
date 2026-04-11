@@ -73,6 +73,38 @@ QWidget *Widget::createPrimaryRoutePlaceholder(const QString &route, QWidget *pa
     return label;
 }
 
+namespace
+{
+QVBoxLayout *ensureSingleColumnHostLayout(QWidget *host)
+{
+    if (!host)
+        return nullptr;
+
+    if (auto *layout = qobject_cast<QVBoxLayout *>(host->layout()))
+    {
+        return layout;
+    }
+
+    delete host->layout();
+    auto *layout = new QVBoxLayout(host);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(12);
+    return layout;
+}
+
+void adoptWidget(QWidget *widget, QWidget *host, int stretch = 0)
+{
+    if (!widget || !host)
+        return;
+
+    if (auto *layout = ensureSingleColumnHostLayout(host))
+    {
+        if (layout->indexOf(widget) < 0)
+            layout->addWidget(widget, stretch);
+    }
+}
+}
+
 void Widget::initAppShell()
 {
     if (!ui || appShell_)
@@ -80,19 +112,14 @@ void Widget::initAppShell()
 
     appShell_ = new AppShell(this);
     appShell_->setObjectName(QStringLiteral("widgetAppShell"));
-    appShell_->hide();
 
-    const QStringList routes = {QStringLiteral("chat"),
-                                QStringLiteral("engineer"),
-                                QStringLiteral("knowledge"),
-                                QStringLiteral("media"),
-                                QStringLiteral("settings")};
-    appShell_->ensurePlaceholderRoutes(
-        routes,
-        kDefaultPrimaryRoute,
-        [](const QString &route, QWidget *parent) -> QWidget * {
-            return createPrimaryRoutePlaceholder(route, parent);
-        });
+    if (ui->verticalLayout_2 && ui->verticalLayout_2->indexOf(appShell_) < 0)
+        ui->verticalLayout_2->insertWidget(0, appShell_, 1);
+
+    if (ui->splitter)
+        ui->splitter->hide();
+
+    appShell_->show();
 
     setupContextDrawerPanels();
     setupWorkspacePages();
@@ -109,12 +136,11 @@ void Widget::setupContextDrawerPanels()
         contextDrawer_->setObjectName(QStringLiteral("widgetContextDrawer"));
     }
 
-    if (appShell_->contextDrawer() && appShell_->contextDrawer()->layout() == nullptr)
+    if (appShell_->contextDrawer() && appShell_->contextDrawer()->layout())
     {
-        QVBoxLayout *drawerLayout = new QVBoxLayout(appShell_->contextDrawer());
-        drawerLayout->setContentsMargins(0, 0, 0, 0);
-        drawerLayout->setSpacing(0);
-        drawerLayout->addWidget(contextDrawer_);
+        QLayout *drawerLayout = appShell_->contextDrawer()->layout();
+        if (drawerLayout->indexOf(contextDrawer_) < 0)
+            drawerLayout->addWidget(contextDrawer_);
     }
 
     contextDrawer_->registerPanel(QStringLiteral("environment"), new QWidget(contextDrawer_));
@@ -162,6 +188,54 @@ void Widget::setupWorkspacePages()
     appShell_->registerPage(QStringLiteral("knowledge"), knowledgeWorkspacePage_);
     appShell_->registerPage(QStringLiteral("media"), mediaWorkspacePage_);
     appShell_->registerPage(QStringLiteral("settings"), settingsWorkspacePage_);
+
+    adoptWidget(ui->output, chatWorkspacePage_->messageViewportHost(), 1);
+    adoptWidget(ui->recordBar, chatWorkspacePage_->sessionMetaHost());
+    adoptWidget(ui->input, chatWorkspacePage_->composerCardHost());
+    adoptWidget(ui->send, chatWorkspacePage_->composerCardHost());
+    adoptWidget(ui->load, chatWorkspacePage_->topBarHost());
+    adoptWidget(ui->date, chatWorkspacePage_->topBarHost());
+    adoptWidget(ui->set, chatWorkspacePage_->topBarHost());
+    adoptWidget(ui->reset, chatWorkspacePage_->topBarHost());
+
+    const auto mountPlaceholder = [](QWidget *host, const QString &text) {
+        if (!host)
+            return;
+        auto *label = host->findChild<QLabel *>(QStringLiteral("workspacePlaceholderLabel"));
+        if (!label)
+        {
+            label = new QLabel(host);
+            label->setObjectName(QStringLiteral("workspacePlaceholderLabel"));
+            label->setWordWrap(true);
+            label->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+            if (auto *layout = ensureSingleColumnHostLayout(host))
+                layout->addWidget(label);
+        }
+        label->setText(text);
+    };
+
+    mountPlaceholder(engineerWorkspacePage_->listColumnHost(), QStringLiteral("Engineer queue / recent context"));
+    mountPlaceholder(engineerWorkspacePage_->summaryCardHost(), QStringLiteral("Engineer summary"));
+    mountPlaceholder(engineerWorkspacePage_->detailCardHost(), QStringLiteral("Engineer task detail"));
+    mountPlaceholder(engineerWorkspacePage_->outputCardHost(), QStringLiteral("Engineer execution output"));
+
+    mountPlaceholder(knowledgeWorkspacePage_->filterBarHost(), QStringLiteral("Knowledge filters and search"));
+    mountPlaceholder(knowledgeWorkspacePage_->collectionListHost(), QStringLiteral("Knowledge collections"));
+    mountPlaceholder(knowledgeWorkspacePage_->detailCardHost(), QStringLiteral("Knowledge detail preview"));
+    mountPlaceholder(knowledgeWorkspacePage_->statusCardHost(), QStringLiteral("Knowledge build status"));
+
+    mountPlaceholder(mediaWorkspacePage_->taskListColumnHost(), QStringLiteral("Media task list"));
+    mountPlaceholder(mediaWorkspacePage_->parameterCardHost(), QStringLiteral("Media parameters"));
+    mountPlaceholder(mediaWorkspacePage_->previewCardHost(), QStringLiteral("Media preview"));
+    mountPlaceholder(mediaWorkspacePage_->resultCardHost(), QStringLiteral("Media result"));
+
+    if (settingsWorkspacePage_->settingsCategoryList() && settingsWorkspacePage_->settingsCategoryList()->count() == 0)
+    {
+        settingsWorkspacePage_->settingsCategoryList()->addItems(
+            QStringList{QStringLiteral("General"), QStringLiteral("Models"), QStringLiteral("Tools"), QStringLiteral("Appearance")});
+    }
+    mountPlaceholder(settingsWorkspacePage_->detailCardHost(), QStringLiteral("Settings detail form"));
+
     appShell_->switchTo(kDefaultPrimaryRoute);
 }
 

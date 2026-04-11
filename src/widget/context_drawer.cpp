@@ -2,6 +2,7 @@
 
 #include "ui_context_drawer.h"
 
+#include <QFrame>
 #include <QStackedWidget>
 
 ContextDrawer::ContextDrawer(QWidget *parent)
@@ -51,6 +52,16 @@ bool ContextDrawer::showPanel(const QString &name)
 QString ContextDrawer::currentPanel() const
 {
     return currentPanel_;
+}
+
+QFrame *ContextDrawer::drawerHeader() const
+{
+    return ui->drawerHeader;
+}
+
+QFrame *ContextDrawer::drawerControls() const
+{
+    return ui->drawerControls;
 }
 
 QStackedWidget *ContextDrawer::panelStack() const

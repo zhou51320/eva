@@ -3,6 +3,7 @@
 
 #include <QApplication>
 #include <QLabel>
+#include <QLayout>
 #include <QStackedWidget>
 
 #include "widget/app_shell.h"
@@ -29,16 +30,64 @@ QApplication *ensureQtApp()
 }
 } // namespace
 
-TEST_CASE("AppShell exposes the four main shell containers")
+TEST_CASE("AppShell exposes the redesigned three-column workspace backbone")
 {
     ensureQtApp();
 
     AppShell shell;
 
-    CHECK(shell.navRail() != nullptr);
-    CHECK(shell.sidePanel() != nullptr);
-    CHECK(shell.workspaceStack() != nullptr);
-    CHECK(shell.contextDrawer() != nullptr);
+    REQUIRE(shell.navRail() != nullptr);
+    REQUIRE(shell.sidePanel() != nullptr);
+    REQUIRE(shell.workspaceStack() != nullptr);
+    REQUIRE(shell.contextDrawer() != nullptr);
+
+    CHECK(shell.navRail()->minimumWidth() == 68);
+    CHECK(shell.navRail()->maximumWidth() == 84);
+    CHECK(shell.sidePanel()->minimumWidth() == 280);
+    CHECK(shell.sidePanel()->maximumWidth() == 360);
+    CHECK(shell.contextDrawer()->parentWidget() == shell.sidePanel());
+}
+
+TEST_CASE("AppShell route switching still drives the dominant workspace stack")
+{
+    ensureQtApp();
+
+    AppShell shell;
+    QWidget chatPage;
+    QWidget settingsPage;
+
+    REQUIRE(shell.registerPage(QStringLiteral("chat"), &chatPage));
+    REQUIRE(shell.registerPage(QStringLiteral("settings"), &settingsPage));
+
+    CHECK(shell.switchTo(QStringLiteral("chat")));
+    CHECK(shell.currentRoute() == QStringLiteral("chat"));
+    CHECK(shell.workspaceStack()->currentWidget() == &chatPage);
+
+    CHECK(shell.switchTo(QStringLiteral(" settings ")));
+    CHECK(shell.currentRoute() == QStringLiteral("settings"));
+    CHECK(shell.workspaceStack()->currentWidget() == &settingsPage);
+}
+
+TEST_CASE("ContextDrawer exposes header controls and panel stack hosts")
+{
+    ensureQtApp();
+
+    ContextDrawer drawer;
+
+    REQUIRE(drawer.drawerHeader() != nullptr);
+    REQUIRE(drawer.drawerControls() != nullptr);
+    REQUIRE(drawer.panelStack() != nullptr);
+}
+
+TEST_CASE("AppShell context drawer host exposes a deterministic embed layout")
+{
+    ensureQtApp();
+
+    AppShell shell;
+
+    REQUIRE(shell.contextDrawer() != nullptr);
+    REQUIRE(shell.contextDrawer()->layout() != nullptr);
+    CHECK(shell.contextDrawer()->layout()->count() == 0);
 }
 
 TEST_CASE("AppShell normalizes routes consistently across registration and switching")
@@ -138,6 +187,10 @@ TEST_CASE("ContextDrawer switches engineering panels")
     QWidget environmentPanel;
     QWidget skillsPanel;
 
+    CHECK(drawer.drawerHeader() != nullptr);
+    CHECK(drawer.drawerControls() != nullptr);
+    CHECK(drawer.panelStack() != nullptr);
+
     CHECK(drawer.registerPanel(QStringLiteral("environment"), &environmentPanel));
     CHECK(drawer.registerPanel(QStringLiteral("skills"), &skillsPanel));
 
@@ -153,58 +206,61 @@ TEST_CASE("ContextDrawer switches engineering panels")
     CHECK(drawer.currentPanel() == QStringLiteral("skills"));
 }
 
-TEST_CASE("ChatWorkspacePage exposes header and composer hosts")
+TEST_CASE("ChatWorkspacePage exposes Cherry-style chat workspace hosts")
 {
     ensureQtApp();
 
     ChatWorkspacePage page;
 
-    REQUIRE(page.headerHost() != nullptr);
-    REQUIRE(page.sessionListHost() != nullptr);
-    REQUIRE(page.messageHost() != nullptr);
-    REQUIRE(page.composerHost() != nullptr);
+    REQUIRE(page.topBarHost() != nullptr);
+    REQUIRE(page.sessionMetaHost() != nullptr);
+    REQUIRE(page.messageViewportHost() != nullptr);
+    REQUIRE(page.composerCardHost() != nullptr);
 }
 
-TEST_CASE("EngineerWorkspacePage exposes overview cards")
+TEST_CASE("EngineerWorkspacePage exposes workbench list detail and output hosts")
 {
     ensureQtApp();
 
     EngineerWorkspacePage page;
 
-    REQUIRE(page.projectSummaryCard() != nullptr);
-    REQUIRE(page.quickActionsCard() != nullptr);
-    REQUIRE(page.recentContextCard() != nullptr);
+    REQUIRE(page.listColumnHost() != nullptr);
+    REQUIRE(page.summaryCardHost() != nullptr);
+    REQUIRE(page.detailCardHost() != nullptr);
+    REQUIRE(page.outputCardHost() != nullptr);
 }
 
-TEST_CASE("KnowledgeWorkspacePage exposes resource list and detail hosts")
+TEST_CASE("KnowledgeWorkspacePage exposes filter list detail and status hosts")
 {
     ensureQtApp();
 
     KnowledgeWorkspacePage page;
 
-    REQUIRE(page.sidebarHost() != nullptr);
-    REQUIRE(page.listHost() != nullptr);
-    REQUIRE(page.detailHost() != nullptr);
+    REQUIRE(page.filterBarHost() != nullptr);
+    REQUIRE(page.collectionListHost() != nullptr);
+    REQUIRE(page.detailCardHost() != nullptr);
+    REQUIRE(page.statusCardHost() != nullptr);
 }
 
-TEST_CASE("MediaWorkspacePage exposes tool tabs and preview host")
+TEST_CASE("MediaWorkspacePage exposes task parameter preview and result hosts")
 {
     ensureQtApp();
 
     MediaWorkspacePage page;
 
-    REQUIRE(page.toolTabs() != nullptr);
-    REQUIRE(page.parameterHost() != nullptr);
-    REQUIRE(page.previewHost() != nullptr);
+    REQUIRE(page.taskListColumnHost() != nullptr);
+    REQUIRE(page.parameterCardHost() != nullptr);
+    REQUIRE(page.previewCardHost() != nullptr);
+    REQUIRE(page.resultCardHost() != nullptr);
 }
 
-TEST_CASE("SettingsWorkspacePage exposes search and category navigation")
+TEST_CASE("SettingsWorkspacePage exposes search category and detail hosts")
 {
     ensureQtApp();
 
     SettingsWorkspacePage page;
 
-    REQUIRE(page.searchEdit() != nullptr);
-    REQUIRE(page.categoryList() != nullptr);
-    REQUIRE(page.detailHost() != nullptr);
+    REQUIRE(page.settingsSearchEdit() != nullptr);
+    REQUIRE(page.settingsCategoryList() != nullptr);
+    REQUIRE(page.detailCardHost() != nullptr);
 }

@@ -6,6 +6,8 @@
 #include <QStringList>
 #include <QWidget>
 
+class QPushButton;
+
 #include <functional>
 
 QT_BEGIN_NAMESPACE
@@ -52,6 +54,7 @@ class AppShell : public QWidget
 
     Ui::AppShell *ui;
     QHash<QString, QWidget *> pages_;
+    QHash<QString, QPushButton *> navButtons_;
     QString currentRoute_;
 };
 

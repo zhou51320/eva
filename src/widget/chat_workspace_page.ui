@@ -4,7 +4,7 @@
  <widget class="QWidget" name="ChatWorkspacePage">
   <layout class="QVBoxLayout" name="rootLayout">
    <property name="spacing">
-    <number>6</number>
+    <number>12</number>
    </property>
    <property name="leftMargin">
     <number>0</number>
@@ -19,49 +19,45 @@
     <number>0</number>
    </property>
    <item>
-    <widget class="QFrame" name="headerHost">
+    <widget class="QFrame" name="chatTopBar">
+     <property name="minimumHeight">
+      <number>72</number>
+     </property>
      <property name="frameShape">
-      <enum>QFrame::NoFrame</enum>
+      <enum>QFrame::StyledPanel</enum>
      </property>
     </widget>
    </item>
    <item>
-    <layout class="QHBoxLayout" name="contentLayout">
-     <property name="spacing">
-      <number>6</number>
+    <widget class="QFrame" name="chatSessionMetaBar">
+     <property name="minimumHeight">
+      <number>52</number>
      </property>
-     <property name="leftMargin">
-      <number>0</number>
+     <property name="frameShape">
+      <enum>QFrame::StyledPanel</enum>
      </property>
-     <property name="topMargin">
-      <number>0</number>
-     </property>
-     <property name="rightMargin">
-      <number>0</number>
-     </property>
-     <property name="bottomMargin">
-      <number>0</number>
-     </property>
-     <item>
-      <widget class="QFrame" name="sessionListHost">
-       <property name="frameShape">
-        <enum>QFrame::NoFrame</enum>
-       </property>
-      </widget>
-     </item>
-     <item>
-      <widget class="QFrame" name="messageHost">
-       <property name="frameShape">
-        <enum>QFrame::NoFrame</enum>
-       </property>
-      </widget>
-     </item>
-    </layout>
+    </widget>
    </item>
    <item>
-    <widget class="QFrame" name="composerHost">
+    <widget class="QFrame" name="chatMessageViewport">
      <property name="frameShape">
-      <enum>QFrame::NoFrame</enum>
+      <enum>QFrame::StyledPanel</enum>
+     </property>
+     <property name="sizePolicy">
+      <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+       <horstretch>0</horstretch>
+       <verstretch>1</verstretch>
+      </sizepolicy>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QFrame" name="chatComposerCard">
+     <property name="minimumHeight">
+      <number>120</number>
+     </property>
+     <property name="frameShape">
+      <enum>QFrame::StyledPanel</enum>
      </property>
     </widget>
    </item>

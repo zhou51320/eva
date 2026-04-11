@@ -2,9 +2,9 @@
 <ui version="4.0">
  <class>SettingsWorkspacePage</class>
  <widget class="QWidget" name="SettingsWorkspacePage">
-  <layout class="QVBoxLayout" name="rootLayout">
+  <layout class="QHBoxLayout" name="rootLayout">
    <property name="spacing">
-    <number>6</number>
+    <number>12</number>
    </property>
    <property name="leftMargin">
     <number>0</number>
@@ -19,40 +19,34 @@
     <number>0</number>
    </property>
    <item>
-    <widget class="QLineEdit" name="searchEdit">
-     <property name="placeholderText">
-      <string>Search settings</string>
-     </property>
-    </widget>
-   </item>
-   <item>
-    <layout class="QHBoxLayout" name="contentLayout">
+    <layout class="QVBoxLayout" name="navigationLayout">
      <property name="spacing">
-      <number>6</number>
-     </property>
-     <property name="leftMargin">
-      <number>0</number>
-     </property>
-     <property name="topMargin">
-      <number>0</number>
-     </property>
-     <property name="rightMargin">
-      <number>0</number>
-     </property>
-     <property name="bottomMargin">
-      <number>0</number>
+      <number>12</number>
      </property>
      <item>
-      <widget class="QListWidget" name="categoryList"/>
-     </item>
-     <item>
-      <widget class="QFrame" name="detailHost">
-       <property name="frameShape">
-        <enum>QFrame::StyledPanel</enum>
+      <widget class="QLineEdit" name="settingsSearchEdit">
+       <property name="placeholderText">
+        <string>Search settings</string>
        </property>
       </widget>
      </item>
+     <item>
+      <widget class="QListWidget" name="settingsCategoryList"/>
+     </item>
     </layout>
+   </item>
+   <item>
+    <widget class="QFrame" name="settingsDetailCard">
+     <property name="frameShape">
+      <enum>QFrame::StyledPanel</enum>
+     </property>
+     <property name="sizePolicy">
+      <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+       <horstretch>0</horstretch>
+       <verstretch>1</verstretch>
+      </sizepolicy>
+     </property>
+    </widget>
    </item>
   </layout>
  </widget>

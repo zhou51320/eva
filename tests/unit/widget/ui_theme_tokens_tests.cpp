@@ -43,6 +43,9 @@ TEST_CASE("ui theme tokens keep resolved theme id aligned with fallback token va
     CHECK(fallback.stateSync == base.stateSync);
     CHECK(fallback.systemRole == base.systemRole);
     CHECK(fallback.assistantRole == base.assistantRole);
+    CHECK(fallback.cardBackground == base.cardBackground);
+    CHECK(fallback.cardBorder == base.cardBorder);
+    CHECK(fallback.accentStrong == base.accentStrong);
     CHECK(empty.textPrimary == base.textPrimary);
     CHECK(empty.stateEva == base.stateEva);
 }
@@ -74,4 +77,21 @@ TEST_CASE("ui theme tokens resolve modern light theme")
     CHECK(tokens.themeId == QStringLiteral("modern_light"));
     CHECK(tokens.overlayResourcePath == QStringLiteral(":/QSS/theme_modern_light.qss"));
     CHECK_FALSE(tokens.darkBase);
+}
+
+TEST_CASE("modern_light theme tokens expose card based shell palette")
+{
+    const UiThemeTokens tokens = resolveUiThemeTokens(QStringLiteral("modern_light"));
+
+    CHECK(tokens.themeId == QStringLiteral("modern_light"));
+    CHECK(tokens.shellBackground == QColor("#F4F7FB"));
+    CHECK(tokens.cardBackground == QColor("#FFFFFF"));
+    CHECK(tokens.cardBorder == QColor("#E5E7EB"));
+    CHECK(tokens.accentSoft == QColor("#EFF6FF"));
+    CHECK(tokens.accentStrong == QColor("#2563EB"));
+    CHECK(tokens.messageUser == QColor("#EFF6FF"));
+    CHECK(tokens.messageAssistant == QColor("#F3F4F6"));
+    CHECK(tokens.shellRadius == 22);
+    CHECK(tokens.cardRadius == 18);
+    CHECK(tokens.pillRadius == 999);
 }

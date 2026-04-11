@@ -19,10 +19,10 @@ class ChatWorkspacePage : public QWidget
     explicit ChatWorkspacePage(QWidget *parent = nullptr);
     ~ChatWorkspacePage() override;
 
-    QFrame *headerHost() const;
-    QFrame *sessionListHost() const;
-    QFrame *messageHost() const;
-    QFrame *composerHost() const;
+    QFrame *topBarHost() const;
+    QFrame *sessionMetaHost() const;
+    QFrame *messageViewportHost() const;
+    QFrame *composerCardHost() const;
 
   private:
     Ui::ChatWorkspacePage *ui;

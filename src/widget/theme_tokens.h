@@ -22,6 +22,16 @@ struct UiThemeTokens
     QColor stateSync = LCL_ORANGE;
     QColor systemRole = SYSTEM_BLUE;
     QColor assistantRole = LCL_ORANGE;
+    QColor shellBackground = QColor("#F4F7FB");
+    QColor cardBackground = QColor("#FFFFFF");
+    QColor cardBorder = QColor("#E5E7EB");
+    QColor accentSoft = QColor("#EFF6FF");
+    QColor accentStrong = QColor("#2563EB");
+    QColor messageUser = QColor("#EFF6FF");
+    QColor messageAssistant = QColor("#F3F4F6");
+    int shellRadius = 22;
+    int cardRadius = 18;
+    int pillRadius = 999;
 };
 
 inline QStringList buildThemeStylesheetPaths(const QString &themeId, bool useLegacyFallback)
@@ -103,6 +113,16 @@ inline UiThemeTokens resolveUiThemeTokens(const QString &themeId)
         tokens.stateSync = QColor("#f59e0b");
         tokens.systemRole = tokens.stateSignal;
         tokens.assistantRole = tokens.stateSync;
+        tokens.shellBackground = QColor("#F4F7FB");
+        tokens.cardBackground = QColor("#FFFFFF");
+        tokens.cardBorder = QColor("#E5E7EB");
+        tokens.accentSoft = QColor("#EFF6FF");
+        tokens.accentStrong = QColor("#2563EB");
+        tokens.messageUser = QColor("#EFF6FF");
+        tokens.messageAssistant = QColor("#F3F4F6");
+        tokens.shellRadius = 22;
+        tokens.cardRadius = 18;
+        tokens.pillRadius = 999;
         return tokens;
     }
 

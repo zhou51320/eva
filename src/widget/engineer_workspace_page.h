@@ -19,9 +19,10 @@ class EngineerWorkspacePage : public QWidget
     explicit EngineerWorkspacePage(QWidget *parent = nullptr);
     ~EngineerWorkspacePage() override;
 
-    QFrame *projectSummaryCard() const;
-    QFrame *quickActionsCard() const;
-    QFrame *recentContextCard() const;
+    QFrame *listColumnHost() const;
+    QFrame *summaryCardHost() const;
+    QFrame *detailCardHost() const;
+    QFrame *outputCardHost() const;
 
   private:
     Ui::EngineerWorkspacePage *ui;
