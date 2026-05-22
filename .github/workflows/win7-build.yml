@@ -12,53 +12,180 @@ jobs:
     runs-on: windows-2022
     defaults:
       run:
-        shell: msys2 {0}
+        shell: pwsh
+    env:
+      BUILD_DIR: build
+      PACKAGE_DIR: package-root/eva-win7-x64
+      PACKAGE_ZIP: eva-win7-x64-build.zip
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup MSYS2 MinGW64
+      - name: Set up MSYS2 MinGW
         uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
+          path-type: inherit
           update: true
           install: >-
             mingw-w64-x86_64-gcc
-            mingw-w64-x86_64-cmake
-            mingw-w64-x86_64-ninja
             mingw-w64-x86_64-openssl
-            mingw-w64-x86_64-angleproject
-            mingw-w64-x86_64-qt5-base
-            mingw-w64-x86_64-qt5-tools
-            mingw-w64-x86_64-qt5-multimedia
-            mingw-w64-x86_64-qt5-script
-            mingw-w64-x86_64-qt5-svg
-            zip
+
+      - name: Set up CMake
+        uses: jwlawson/actions-setup-cmake@v2
+
+      - name: Set up Ninja
+        uses: seanmiddleditch/gha-setup-ninja@v5
+
+      - name: Install Qt 5.15 (MinGW)
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '5.15.2'
+          host: 'windows'
+          target: 'desktop'
+          arch: 'win64_mingw81'
+          modules: 'qtscript'
+          cache: true
 
       - name: Configure CMake
-        run: >-
-          cmake -S . -B build -G Ninja
-          -DCMAKE_BUILD_TYPE=Release
-          -DCMAKE_PREFIX_PATH=/mingw64
-          -DOPENSSL_ROOT_DIR=/mingw64
-          -DBODY_PACK=ON
-          -DBODY_SKIP_WINDEPLOYQT=OFF
-          -DBODY_COPY_MINGW_RUNTIME=ON
-          -DEVA_ENABLE_QT_TTS=OFF
-          -DEVA_ENABLE_UNIT_TESTS=OFF
-          -DEVA_ENABLE_FUNCTIONAL_TESTS=OFF
+        run: |
+          $qtPrefix = & qmake -query QT_INSTALL_PREFIX
+          if (-not $qtPrefix) {
+            throw 'qmake did not return QT_INSTALL_PREFIX'
+          }
+          $mingwBinDir = Split-Path (Get-Command gcc.exe).Source -Parent
+          $mingwRoot = Split-Path $mingwBinDir -Parent
+          cmake -S . -B $env:BUILD_DIR -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_PREFIX_PATH=$qtPrefix `
+            -DOPENSSL_ROOT_DIR=$mingwRoot `
+            -DBODY_PACK=ON `
+            -DBODY_SKIP_WINDEPLOYQT=ON `
+            -DBODY_COPY_MINGW_RUNTIME=OFF `
+            -DEVA_ENABLE_QT_TTS=OFF `
+            -DEVA_ENABLE_UNIT_TESTS=OFF `
+            -DEVA_ENABLE_FUNCTIONAL_TESTS=OFF
 
       - name: Build Win7 package
-        run: cmake --build build --target eva --parallel
+        run: cmake --build $env:BUILD_DIR --target eva --config Release --parallel
 
-      - name: Package Win7 artifact
+      - name: Deploy Qt runtime manually
         run: |
-          cd build/bin
-          zip -r ../../eva-win7-x64-build.zip .
+          $binDir = Join-Path $pwd "$env:BUILD_DIR/bin"
+          $qtBinDir = & qmake -query QT_INSTALL_BINS
+          $qtPluginsDir = & qmake -query QT_INSTALL_PLUGINS
+          $mingwBinDir = Split-Path (Get-Command gcc.exe).Source -Parent
+
+          if (-not (Test-Path $binDir)) {
+            throw "Build output directory missing: $binDir"
+          }
+          if (-not (Test-Path $qtBinDir)) {
+            throw "Qt bin directory missing: $qtBinDir"
+          }
+          if (-not (Test-Path $qtPluginsDir)) {
+            throw "Qt plugins directory missing: $qtPluginsDir"
+          }
+
+          $qtDlls = @(
+            'Qt5Core.dll',
+            'Qt5Gui.dll',
+            'Qt5Multimedia.dll',
+            'Qt5MultimediaWidgets.dll',
+            'Qt5Network.dll',
+            'Qt5Sql.dll',
+            'Qt5Svg.dll',
+            'Qt5Widgets.dll'
+          )
+          foreach ($dll in $qtDlls) {
+            $src = Join-Path $qtBinDir $dll
+            if (-not (Test-Path $src)) {
+              throw "Required Qt DLL missing: $src"
+            }
+            Copy-Item $src $binDir -Force
+          }
+
+          $optionalGraphicsDlls = @(
+            'libEGL.dll',
+            'libGLESv2.dll',
+            'opengl32sw.dll',
+            'd3dcompiler_47.dll',
+            'd3dcompiler_43.dll'
+          )
+          foreach ($dll in $optionalGraphicsDlls) {
+            $src = Join-Path $qtBinDir $dll
+            if (Test-Path $src) {
+              Copy-Item $src $binDir -Force
+            }
+          }
+
+          $pluginDirs = @('platforms', 'sqldrivers', 'styles', 'imageformats', 'iconengines', 'audio', 'mediaservice')
+          foreach ($pluginDir in $pluginDirs) {
+            $srcDir = Join-Path $qtPluginsDir $pluginDir
+            if (Test-Path $srcDir) {
+              Copy-Item $srcDir $binDir -Recurse -Force
+            }
+          }
+
+          $mingwRuntimeDlls = @(
+            'libgcc_s_seh-1.dll',
+            'libstdc++-6.dll',
+            'libwinpthread-1.dll'
+          )
+          foreach ($dll in $mingwRuntimeDlls) {
+            $src = Join-Path $mingwBinDir $dll
+            if (Test-Path $src) {
+              Copy-Item $src $binDir -Force
+            }
+          }
+
+      - name: Stage package directory
+        run: |
+          $packageDir = Join-Path $pwd $env:PACKAGE_DIR
+          New-Item -ItemType Directory -Force -Path $packageDir | Out-Null
+
+          $binDir = Join-Path $pwd "$env:BUILD_DIR/bin"
+          $builtExe = Get-ChildItem -Path $binDir -Filter 'eva*.exe' | Select-Object -First 1
+          if (-not $builtExe) {
+            throw "Expected built executable not found under: $binDir"
+          }
+
+          Copy-Item "$binDir\*" $packageDir -Recurse -Force
+
+          $packagedExe = Join-Path $packageDir $builtExe.Name
+          if (-not (Test-Path $packagedExe)) {
+            throw "Packaged executable missing after copy: $packagedExe"
+          }
+
+      - name: Validate packaged runtime directories
+        run: |
+          $packageDir = Join-Path $pwd $env:PACKAGE_DIR
+          $platformPlugin = Join-Path $packageDir 'platforms/qwindows.dll'
+          if (-not (Test-Path $platformPlugin)) {
+            throw "Qt platform plugin missing from package: $platformPlugin"
+          }
+
+          $coreDll = Join-Path $packageDir 'Qt5Core.dll'
+          if (-not (Test-Path $coreDll)) {
+            throw "Qt runtime missing from package: $coreDll"
+          }
+
+          $skillsDir = Join-Path $packageDir 'EVA_SKILLS'
+          if (-not (Test-Path $skillsDir)) {
+            New-Item -ItemType Directory -Force -Path $skillsDir | Out-Null
+          }
+
+      - name: Create zip artifact
+        run: |
+          $zipPath = Join-Path $pwd $env:PACKAGE_ZIP
+          if (Test-Path $zipPath) {
+            Remove-Item $zipPath -Force
+          }
+          Compress-Archive -Path (Join-Path $pwd $env:PACKAGE_DIR) -DestinationPath $zipPath
 
       - name: Upload Win7 artifact
         uses: actions/upload-artifact@v4
         with:
           name: eva-win7-x64-build
-          path: eva-win7-x64-build.zip
+          path: ${{ env.PACKAGE_ZIP }}
+          if-no-files-found: error
