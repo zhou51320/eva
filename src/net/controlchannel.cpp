@@ -38,11 +38,11 @@ ControlChannel::~ControlChannel()
     disconnectFromHost();
 }
 
-bool ControlChannel::startHost(quint16 port)
+bool ControlChannel::startHost(quint16 port, const QHostAddress &address)
 {
     if (!server_) return false;
     if (server_->isListening()) server_->close();
-    const bool ok = server_->listen(QHostAddress::Any, port);
+    const bool ok = server_->listen(address, port);
     if (!ok)
     {
         emit hostClientChanged(false, QStringLiteral("listen failed"));

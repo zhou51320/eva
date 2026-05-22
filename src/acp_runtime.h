@@ -4,6 +4,7 @@
 #include <QJsonObject>
 #include <QString>
 
+#include "acp_bridge_client.h"
 #include "app/app_context.h"
 #include "service/backend/xbackend.h"
 #include "xconfig.h"
@@ -31,10 +32,13 @@ class AcpRuntime : public QObject
     QJsonObject backendStatePayload() const;
     bool loadBackend(const QJsonObject &request, QString *errorMessage);
     bool linkModeEnabled() const;
+    bool bridgeModeEnabled() const;
     QString modelsEndpoint() const;
     QString chatCompletionsEndpoint() const;
     QString configuredApiKey() const;
     QString configuredApiModel() const;
+    bool resetConversation(QString *errorMessage);
+    QJsonObject chatCompletion(const QJsonObject &request, QString *errorMessage);
 
   private slots:
     void onServerOutput(const QString &chunk);
@@ -72,4 +76,5 @@ class AcpRuntime : public QObject
     QString lastOutput_;
     bool backendReady_ = false;
     LocalServerManager *serverManager_ = nullptr;
+    AcpBridgeClient *bridgeClient_ = nullptr;
 };

@@ -7,6 +7,9 @@ const state = {
 };
 
 const els = {
+  navItems: Array.from(document.querySelectorAll('.nav-item[data-panel]')),
+  chatPanel: document.getElementById('chat-panel'),
+  runtimePanel: document.getElementById('runtime-panel'),
   messageList: document.getElementById('message-list'),
   messageTemplate: document.getElementById('message-template'),
   sessionList: document.getElementById('session-list'),
@@ -44,7 +47,7 @@ function loadSessions() {
     if (!raw) return;
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return;
-    state.sessions = parsed;
+    state.sessions = parsed.slice(0, 1);
     if (state.sessions.length > 0) {
       state.activeSessionId = state.sessions[0].id;
     }
@@ -55,6 +58,21 @@ function saveSessions() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state.sessions.slice(0, 12)));
 }
 
+async function resetRuntimeConversation() {
+  const response = await fetch('/api/runtime/reset', { method: 'POST' });
+  const text = await response.text();
+  let json = {};
+  try {
+    json = text ? JSON.parse(text) : {};
+  } catch (_) {
+    json = { raw: text };
+  }
+  if (!response.ok) {
+    throw new Error(json.error || json.details || text || `HTTP ${response.status}`);
+  }
+  return json;
+}
+
 function createSession() {
   const session = {
     id: String(Date.now()),
@@ -62,7 +80,7 @@ function createSession() {
     messages: [],
     createdAt: new Date().toISOString(),
   };
-  state.sessions.unshift(session);
+  state.sessions = [session];
   state.activeSessionId = session.id;
   saveSessions();
   renderSessions();
@@ -197,6 +215,16 @@ function toggleModeFields() {
   const link = els.modeSelect.value === 'link';
   els.localFields.classList.toggle('hidden', link);
   els.linkFields.classList.toggle('hidden', !link);
+}
+
+function switchPanel(panel) {
+  const runtime = panel === 'runtime';
+  els.chatPanel.classList.toggle('hidden', runtime);
+  els.runtimePanel.classList.toggle('hidden', !runtime);
+  els.navItems.forEach((item) => item.classList.toggle('active', item.dataset.panel === panel));
+  if (runtime) {
+    els.runtimePanel.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  }
 }
 
 async function fetchJson(url, options) {
@@ -384,11 +412,18 @@ function escapeHtml(value) {
 }
 
 function bindEvents() {
+  els.navItems.forEach((item) => item.addEventListener('click', () => switchPanel(item.dataset.panel)));
   els.modeSelect.addEventListener('change', toggleModeFields);
   els.applyLoad.addEventListener('click', applyLoad);
   els.refreshAll.addEventListener('click', refreshAll);
   els.sendChat.addEventListener('click', sendChat);
-  els.newChat.addEventListener('click', () => createSession());
+  els.newChat.addEventListener('click', async () => {
+    try {
+      await resetRuntimeConversation();
+    } catch (_) {}
+    createSession();
+    await refreshAll();
+  });
   els.chatInput.addEventListener('keydown', (event) => {
     if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
       event.preventDefault();
@@ -404,6 +439,7 @@ async function bootstrap() {
   renderMessages();
   bindEvents();
   toggleModeFields();
+  switchPanel('chat');
   await refreshAll();
 }
 

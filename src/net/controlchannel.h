@@ -2,6 +2,7 @@
 #define CONTROLCHANNEL_H
 
 #include <QByteArray>
+#include <QHostAddress>
 #include <QJsonObject>
 #include <QPointer>
 #include <QTcpServer>
@@ -26,7 +27,7 @@ class ControlChannel : public QObject
     ~ControlChannel() override;
 
     // Host-side: listen for a controller. Rejects extra connections.
-    bool startHost(quint16 port);
+    bool startHost(quint16 port, const QHostAddress &address = QHostAddress::Any);
     void stopHost();
     bool hasHostClient() const { return !hostSocket_.isNull(); }
     QString hostPeer() const;

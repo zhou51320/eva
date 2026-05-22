@@ -136,6 +136,8 @@ add_executable(
     eva_acp
     resource/res_acp_web.qrc
     src/acp_main.cpp
+    src/acp_bridge_client.cpp
+    src/acp_bridge_client.h
     src/acp_runtime.cpp
     src/acp_runtime.h
     src/acp_http_server.cpp
@@ -151,6 +153,8 @@ add_executable(
     src/service/backend/xbackend.h
     src/service/backend/xbackend_args.cpp
     src/service/backend/xbackend_args.h
+    src/net/controlchannel.cpp
+    src/net/controlchannel.h
     src/utils/devicemanager.cpp
     src/utils/devicemanager.h
     src/utils/pathutil.cpp

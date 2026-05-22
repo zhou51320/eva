@@ -419,6 +419,8 @@ Widget::Widget(QWidget *parent, QString applicationDirPath_)
     history_ = new HistoryStore(QDir(applicationDirPath).filePath("EVA_TEMP/history"));
     logStep(QStringLiteral("历史记录存储初始化完成"));
 
+    ensureAcpBridgeHost();
+
     // 进程退出前，确保停止本地 llama-server，避免残留进程
     connect(qApp, &QCoreApplication::aboutToQuit, this, [this]()
             {
@@ -436,6 +438,12 @@ Widget::~Widget()
         controlChannel_->blockSignals(true);
         delete controlChannel_;
         controlChannel_ = nullptr;
+    }
+    if (acpBridgeChannel_)
+    {
+        acpBridgeChannel_->blockSignals(true);
+        delete acpBridgeChannel_;
+        acpBridgeChannel_ = nullptr;
     }
 
     if (serverManager) serverManager->stop();

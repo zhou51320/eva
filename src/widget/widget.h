@@ -981,6 +981,8 @@ class Widget : public QWidget
     void enforcePredictLimit(bool syncSpin = true, bool clampSettings = true);
     // Control channel helpers
     void setupControlChannel();
+    void setupAcpBridgeChannel();
+    void ensureAcpBridgeHost();
     void setControlHostEnabled(bool enabled);
     void beginControlLink();
     void releaseControl(bool notifyRemote = true);
@@ -988,6 +990,13 @@ class Widget : public QWidget
     void handleControlHostCommand(const QJsonObject &payload);
     void handleControlControllerEvent(const QJsonObject &payload);
     void handleControlControllerState(ControlChannel::ControllerState state, const QString &reason);
+    void handleAcpBridgeClientChanged(bool connected, const QString &reason);
+    void handleAcpBridgeCommand(const QJsonObject &payload);
+    void sendAcpBridgeResponse(const QJsonObject &payload);
+    bool applyAcpBridgeLoad(const QJsonObject &payload, QString *errorMessage);
+    bool resetAcpBridgeConversation(QString *errorMessage);
+    bool sendBridgeText(const QString &text, QString *errorMessage);
+    void sendToRemotePeers(const QJsonObject &payload);
     void applyControlSnapshot(const QJsonObject &snap);
     void broadcastControlSnapshot();
     void broadcastControlOutput(const QString &result, bool isStream, const QColor &color, const QString &roleHint = QString(), int thinkActiveFlag = -1);
@@ -1008,6 +1017,8 @@ class Widget : public QWidget
     QJsonObject buildControlSnapshot() const;
     QJsonObject buildControlMonitor() const;
     QJsonArray buildControlRecords() const;
+    QJsonObject buildAcpBridgeState() const;
+    QJsonArray buildAcpBridgeModels() const;
 
   private:
     void syncDefaultSystemPrompt(); // 切换语种时刷新默认系统提示词
@@ -1018,7 +1029,9 @@ class Widget : public QWidget
 
     // Control channel state
     ControlChannel *controlChannel_ = nullptr;
+    ControlChannel *acpBridgeChannel_ = nullptr;
     bool controlHostAllowed_ = false;
+    bool acpBridgeConnected_ = false;
     LinkProfile linkProfile_ = LinkProfile::Api;
     bool controlThinkActive_ = false; // controller side: track ongoing think stream
     QString controlStreamRole_;       // last role hint from host ("think"/"assistant")

@@ -4,10 +4,13 @@
 #include "../utils/flowtracer.h"
 #include "../utils/openai_compat.h"
 #include <QDateTime>
+#include <QDir>
+#include <QDirIterator>
 #include <QUrl>
 #include <QHostInfo>
 #include <QFileInfo>
 #include <QTextCharFormat>
+#include <algorithm>
 
 namespace
 {
@@ -827,6 +830,320 @@ void Widget::setupControlChannel()
     connect(controlChannel_, &ControlChannel::controllerStateChanged, this, &Widget::handleControlControllerState);
 }
 
+void Widget::setupAcpBridgeChannel()
+{
+    if (acpBridgeChannel_) return;
+    acpBridgeChannel_ = new ControlChannel(this);
+    connect(acpBridgeChannel_, &ControlChannel::hostClientChanged, this, &Widget::handleAcpBridgeClientChanged);
+    connect(acpBridgeChannel_, &ControlChannel::hostCommandArrived, this, &Widget::handleAcpBridgeCommand);
+}
+
+void Widget::ensureAcpBridgeHost()
+{
+    setupAcpBridgeChannel();
+    if (!acpBridgeChannel_) return;
+    if (acpBridgeChannel_->startHost(static_cast<quint16>(DEFAULT_ACP_BRIDGE_PORT), QHostAddress::LocalHost))
+    {
+        FlowTracer::log(FlowChannel::Net, QStringLiteral("[acp-bridge] listening on 127.0.0.1:%1").arg(DEFAULT_ACP_BRIDGE_PORT), activeTurnId_);
+    }
+    else
+    {
+        FlowTracer::log(FlowChannel::Net, QStringLiteral("[acp-bridge] listen failed %1").arg(DEFAULT_ACP_BRIDGE_PORT), activeTurnId_);
+    }
+}
+
+void Widget::handleAcpBridgeClientChanged(bool connected, const QString &reason)
+{
+    acpBridgeConnected_ = connected;
+    FlowTracer::log(FlowChannel::Net,
+                    QStringLiteral("[acp-bridge] client %1 (%2)")
+                        .arg(connected ? QStringLiteral("connected") : QStringLiteral("disconnected"), reason),
+                    activeTurnId_);
+}
+
+void Widget::sendAcpBridgeResponse(const QJsonObject &payload)
+{
+    if (!acpBridgeConnected_ || !acpBridgeChannel_) return;
+    acpBridgeChannel_->sendToController(payload);
+}
+
+void Widget::sendToRemotePeers(const QJsonObject &payload)
+{
+    if (isHostControlled() && controlChannel_)
+    {
+        controlChannel_->sendToController(payload);
+    }
+    if (acpBridgeConnected_ && acpBridgeChannel_)
+    {
+        acpBridgeChannel_->sendToController(payload);
+    }
+}
+
+QJsonObject Widget::buildAcpBridgeState() const
+{
+    QJsonObject state;
+    state.insert(QStringLiteral("mode"), ui_mode == LINK_MODE ? QStringLiteral("link") : QStringLiteral("local"));
+    state.insert(QStringLiteral("state"), backendLifecycleStateName(backendLifecycleState_));
+    state.insert(QStringLiteral("ready"), ui_mode == LINK_MODE ? !apis.api_endpoint.isEmpty() : backendOnline_);
+    state.insert(QStringLiteral("endpoint"), current_api);
+    state.insert(QStringLiteral("current_model"), resolvedModelLabelForUi());
+    state.insert(QStringLiteral("current_model_path"), ui_mode == LINK_MODE ? QString() : ui_SETTINGS.modelpath);
+    state.insert(QStringLiteral("backend_choice"), ui_mode == LINK_MODE ? QStringLiteral("link") : ui_device_backend);
+    state.insert(QStringLiteral("backend_resolved"), ui_mode == LINK_MODE ? QStringLiteral("remote") : runtimeDeviceBackend_);
+    state.insert(QStringLiteral("server_running"), serverManager && serverManager->isRunning());
+    state.insert(QStringLiteral("port"), ui_mode == LINK_MODE ? QString() : ui_port);
+    state.insert(QStringLiteral("nctx"), ui_SETTINGS.nctx);
+    state.insert(QStringLiteral("ngl"), ui_SETTINGS.ngl);
+    state.insert(QStringLiteral("nthread"), ui_SETTINGS.nthread);
+    state.insert(QStringLiteral("parallel"), ui_SETTINGS.hid_parallel);
+    state.insert(QStringLiteral("mmproj_path"), ui_SETTINGS.mmprojpath);
+    state.insert(QStringLiteral("lora_path"), ui_SETTINGS.lorapath);
+    state.insert(QStringLiteral("api_endpoint"), ui_mode == LINK_MODE ? apis.api_endpoint : QString());
+    state.insert(QStringLiteral("api_model"), ui_mode == LINK_MODE ? apis.api_model : QString());
+    state.insert(QStringLiteral("ui_state"), ui_state == CHAT_STATE ? QStringLiteral("chat") : QStringLiteral("complete"));
+    state.insert(QStringLiteral("is_run"), is_run);
+    state.insert(QStringLiteral("snapshot"), buildControlSnapshot());
+    return state;
+}
+
+QJsonArray Widget::buildAcpBridgeModels() const
+{
+    QJsonArray models;
+    if (ui_mode == LINK_MODE)
+    {
+        if (!apis.api_model.isEmpty())
+        {
+            QJsonObject model;
+            model.insert(QStringLiteral("id"), apis.api_model);
+            model.insert(QStringLiteral("object"), QStringLiteral("model"));
+            model.insert(QStringLiteral("owned_by"), QStringLiteral("eva-bridge"));
+            model.insert(QStringLiteral("current"), true);
+            model.insert(QStringLiteral("source"), QStringLiteral("remote"));
+            model.insert(QStringLiteral("endpoint"), apis.api_endpoint);
+            models.append(model);
+        }
+        return models;
+    }
+
+    QStringList paths;
+    const QString llmRoot = QDir(applicationDirPath).filePath(QStringLiteral("EVA_MODELS/llm"));
+    if (QDir(llmRoot).exists())
+    {
+        QDirIterator it(llmRoot, QStringList() << QStringLiteral("*.gguf"), QDir::Files, QDirIterator::Subdirectories);
+        while (it.hasNext())
+        {
+            paths.append(QFileInfo(it.next()).absoluteFilePath());
+        }
+    }
+    if (!ui_SETTINGS.modelpath.isEmpty() && QFileInfo::exists(ui_SETTINGS.modelpath) && !paths.contains(ui_SETTINGS.modelpath))
+    {
+        paths.append(ui_SETTINGS.modelpath);
+    }
+    std::sort(paths.begin(), paths.end(), [](const QString &left, const QString &right)
+    {
+        return left.toLower() < right.toLower();
+    });
+    for (const QString &path : paths)
+    {
+        QFileInfo info(path);
+        QJsonObject model;
+        model.insert(QStringLiteral("id"), info.fileName());
+        model.insert(QStringLiteral("object"), QStringLiteral("model"));
+        model.insert(QStringLiteral("owned_by"), QStringLiteral("eva-bridge"));
+        model.insert(QStringLiteral("current"), path == ui_SETTINGS.modelpath);
+        model.insert(QStringLiteral("source"), QStringLiteral("local"));
+        model.insert(QStringLiteral("path"), path);
+        models.append(model);
+    }
+    return models;
+}
+
+bool Widget::applyAcpBridgeLoad(const QJsonObject &payload, QString *errorMessage)
+{
+    const QString mode = payload.value(QStringLiteral("mode")).toString().trimmed().toLower();
+    if (mode == QStringLiteral("link"))
+    {
+        const QString endpoint = payload.value(QStringLiteral("api_endpoint")).toString().trimmed();
+        const QString model = payload.value(QStringLiteral("api_model")).toString().trimmed();
+        if (endpoint.isEmpty())
+        {
+            if (errorMessage) *errorMessage = QStringLiteral("Remote api_endpoint is required.");
+            return false;
+        }
+        if (api_endpoint_LineEdit) api_endpoint_LineEdit->setText(endpoint);
+        if (api_key_LineEdit) api_key_LineEdit->setText(payload.value(QStringLiteral("api_key")).toString().trimmed());
+        if (api_model_LineEdit) api_model_LineEdit->setText(model);
+        set_api();
+        return true;
+    }
+
+    QString modelPath = payload.value(QStringLiteral("model_path")).toString().trimmed();
+    if (modelPath.isEmpty()) modelPath = ui_SETTINGS.modelpath;
+    if (modelPath.isEmpty() || !QFileInfo::exists(modelPath))
+    {
+        if (errorMessage) *errorMessage = QStringLiteral("Local model path is missing or invalid.");
+        return false;
+    }
+
+    if (payload.contains(QStringLiteral("nthread"))) ui_SETTINGS.nthread = qMax(1, payload.value(QStringLiteral("nthread")).toInt(ui_SETTINGS.nthread));
+    if (payload.contains(QStringLiteral("nctx"))) ui_SETTINGS.nctx = qMax(1, payload.value(QStringLiteral("nctx")).toInt(ui_SETTINGS.nctx));
+    if (payload.contains(QStringLiteral("ngl"))) ui_SETTINGS.ngl = payload.value(QStringLiteral("ngl")).toInt(ui_SETTINGS.ngl);
+    if (payload.contains(QStringLiteral("parallel"))) ui_SETTINGS.hid_parallel = qMax(1, payload.value(QStringLiteral("parallel")).toInt(ui_SETTINGS.hid_parallel));
+    if (payload.contains(QStringLiteral("port"))) ui_port = payload.value(QStringLiteral("port")).toString().trimmed();
+    if (payload.contains(QStringLiteral("backend")))
+    {
+        ui_device_backend = payload.value(QStringLiteral("backend")).toString().trimmed().toLower();
+        if (ui_device_backend.isEmpty()) ui_device_backend = QStringLiteral("auto");
+    }
+    DeviceManager::setUserChoice(ui_device_backend);
+    ui_mode = LOCAL_MODE;
+    apis.is_local_backend = true;
+    currentpath = historypath = modelPath;
+    ui_SETTINGS.modelpath = modelPath;
+    current_api.clear();
+    backendOnline_ = false;
+    if (proxyServer_) proxyServer_->setBackendAvailable(false);
+    slotCtxMax_ = 0;
+    ui_state_loading();
+    ensureLocalServer(false, true);
+    return true;
+}
+
+bool Widget::resetAcpBridgeConversation(QString *errorMessage)
+{
+    if (is_run || turnActive_ || toolInvocationActive_)
+    {
+        if (errorMessage) *errorMessage = jtr("control command blocked");
+        return false;
+    }
+    on_reset_clicked();
+    broadcastControlSnapshot();
+    return true;
+}
+
+bool Widget::sendBridgeText(const QString &text, QString *errorMessage)
+{
+    if (is_run || turnActive_)
+    {
+        if (errorMessage) *errorMessage = jtr("control command blocked");
+        return false;
+    }
+    if (text.trimmed().isEmpty())
+    {
+        if (errorMessage) *errorMessage = jtr("control send missing");
+        return false;
+    }
+    struct DraftBackup
+    {
+        QString text;
+        QStringList attachments;
+    };
+    DraftBackup backup;
+    if (ui && ui->input && ui->input->textEdit)
+    {
+        backup.text = ui->input->textEdit->toPlainText();
+        QStringList paths = ui->input->imageFilePaths();
+        paths.append(ui->input->documentFilePaths());
+        paths.append(ui->input->wavFilePaths());
+        backup.attachments = paths;
+    }
+    if (ui && ui->input && ui->input->textEdit)
+    {
+        ui->input->textEdit->setPlainText(text);
+        ui->input->clearThumbnails();
+        on_send_clicked();
+        if (!backup.text.isEmpty() || !backup.attachments.isEmpty())
+        {
+            ui->input->textEdit->setPlainText(backup.text);
+            ui->input->clearThumbnails();
+            if (!backup.attachments.isEmpty())
+                ui->input->addFiles(backup.attachments);
+        }
+        return true;
+    }
+    if (errorMessage) *errorMessage = QStringLiteral("Input editor is unavailable.");
+    return false;
+}
+
+void Widget::handleAcpBridgeCommand(const QJsonObject &payload)
+{
+    const QString type = payload.value(QStringLiteral("type")).toString();
+    if (type != QStringLiteral("command")) return;
+    const QString name = payload.value(QStringLiteral("name")).toString();
+    const QString requestId = payload.value(QStringLiteral("request_id")).toString();
+
+    QJsonObject response;
+    response.insert(QStringLiteral("type"), QStringLiteral("bridge_response"));
+    response.insert(QStringLiteral("name"), name);
+    if (!requestId.isEmpty()) response.insert(QStringLiteral("request_id"), requestId);
+
+    if (name == QStringLiteral("bridge_get_state"))
+    {
+        response.insert(QStringLiteral("ok"), true);
+        response.insert(QStringLiteral("state"), buildAcpBridgeState());
+        sendAcpBridgeResponse(response);
+        return;
+    }
+    if (name == QStringLiteral("bridge_list_models"))
+    {
+        response.insert(QStringLiteral("ok"), true);
+        response.insert(QStringLiteral("models"), buildAcpBridgeModels());
+        sendAcpBridgeResponse(response);
+        return;
+    }
+    if (name == QStringLiteral("bridge_apply_load"))
+    {
+        QString errorMessage;
+        const bool ok = applyAcpBridgeLoad(payload, &errorMessage);
+        response.insert(QStringLiteral("ok"), ok);
+        if (ok)
+        {
+            response.insert(QStringLiteral("accepted"), true);
+            response.insert(QStringLiteral("state"), buildAcpBridgeState());
+            response.insert(QStringLiteral("models"), buildAcpBridgeModels());
+        }
+        else
+        {
+            response.insert(QStringLiteral("error"), errorMessage);
+        }
+        sendAcpBridgeResponse(response);
+        return;
+    }
+    if (name == QStringLiteral("bridge_reset"))
+    {
+        QString errorMessage;
+        const bool ok = resetAcpBridgeConversation(&errorMessage);
+        response.insert(QStringLiteral("ok"), ok);
+        if (ok)
+        {
+            response.insert(QStringLiteral("accepted"), true);
+            response.insert(QStringLiteral("state"), buildAcpBridgeState());
+        }
+        else
+        {
+            response.insert(QStringLiteral("error"), errorMessage);
+        }
+        sendAcpBridgeResponse(response);
+        return;
+    }
+    if (name == QStringLiteral("bridge_send"))
+    {
+        QString errorMessage;
+        const bool ok = sendBridgeText(payload.value(QStringLiteral("text")).toString(), &errorMessage);
+        response.insert(QStringLiteral("ok"), ok);
+        if (ok)
+            response.insert(QStringLiteral("accepted"), true);
+        else
+            response.insert(QStringLiteral("error"), errorMessage);
+        sendAcpBridgeResponse(response);
+        return;
+    }
+
+    response.insert(QStringLiteral("ok"), false);
+    response.insert(QStringLiteral("error"), QStringLiteral("Unknown bridge command."));
+    sendAcpBridgeResponse(response);
+}
+
 void Widget::setControlHostEnabled(bool enabled)
 {
     if (enabled)
@@ -949,11 +1266,11 @@ QJsonArray Widget::buildControlRecords() const
 
 void Widget::broadcastControlSnapshot()
 {
-    if (!isHostControlled()) return;
+    if (!isHostControlled() && !acpBridgeConnected_) return;
     QJsonObject payload;
     payload.insert(QStringLiteral("type"), QStringLiteral("snapshot"));
     payload.insert(QStringLiteral("snapshot"), buildControlSnapshot());
-    controlChannel_->sendToController(payload);
+    sendToRemotePeers(payload);
     const int recordCount = recordEntries_.size();
     const int outputLen = (ui && ui->output) ? ui->output->toPlainText().size() : 0;
     const int stateLen = (ui && ui->state) ? ui->state->toPlainText().size() : 0;
@@ -967,44 +1284,44 @@ void Widget::broadcastControlSnapshot()
 
 void Widget::broadcastControlMonitor()
 {
-    if (!isHostControlled()) return;
+    if (!isHostControlled() && !acpBridgeConnected_) return;
     QJsonObject payload;
     payload.insert(QStringLiteral("type"), QStringLiteral("monitor"));
     payload.insert(QStringLiteral("monitor"), buildControlMonitor());
-    controlChannel_->sendToController(payload);
+    sendToRemotePeers(payload);
 }
 
 void Widget::broadcastControlRecordClear()
 {
-    if (!isHostControlled()) return;
+    if (!isHostControlled() && !acpBridgeConnected_) return;
     QJsonObject payload;
     payload.insert(QStringLiteral("type"), QStringLiteral("record_clear"));
-    controlChannel_->sendToController(payload);
+    sendToRemotePeers(payload);
 }
 
 void Widget::broadcastControlRecordAdd(RecordRole role, const QString &toolName)
 {
-    if (!isHostControlled()) return;
+    if (!isHostControlled() && !acpBridgeConnected_) return;
     QJsonObject payload;
     payload.insert(QStringLiteral("type"), QStringLiteral("record_add"));
     payload.insert(QStringLiteral("role"), static_cast<int>(role));
     if (!toolName.isEmpty()) payload.insert(QStringLiteral("tool"), toolName);
-    controlChannel_->sendToController(payload);
+    sendToRemotePeers(payload);
 }
 
 void Widget::broadcastControlRecordUpdate(int index, const QString &deltaText)
 {
-    if (!isHostControlled()) return;
+    if (!isHostControlled() && !acpBridgeConnected_) return;
     QJsonObject payload;
     payload.insert(QStringLiteral("type"), QStringLiteral("record_update"));
     payload.insert(QStringLiteral("index"), index);
     payload.insert(QStringLiteral("delta"), deltaText);
-    controlChannel_->sendToController(payload);
+    sendToRemotePeers(payload);
 }
 
 void Widget::broadcastControlOutput(const QString &result, bool isStream, const QColor &color, const QString &roleHint, int thinkActiveFlag)
 {
-    if (!isHostControlled()) return;
+    if (!isHostControlled() && !acpBridgeConnected_) return;
     QJsonObject payload;
     payload.insert(QStringLiteral("type"), QStringLiteral("output"));
     payload.insert(QStringLiteral("text"), result);
@@ -1012,7 +1329,7 @@ void Widget::broadcastControlOutput(const QString &result, bool isStream, const 
     payload.insert(QStringLiteral("color"), color.name(QColor::HexArgb));
     if (!roleHint.isEmpty()) payload.insert(QStringLiteral("role"), roleHint);
     if (thinkActiveFlag >= 0) payload.insert(QStringLiteral("think_active"), thinkActiveFlag);
-    controlChannel_->sendToController(payload);
+    sendToRemotePeers(payload);
     // FlowTracer::log(FlowChannel::Session,
     //                 QStringLiteral("[control] host stream role=%1 stream=%2 think=%3 text=%4")
     //                     .arg(roleHint.isEmpty() ? QStringLiteral("-") : roleHint)
@@ -1024,12 +1341,12 @@ void Widget::broadcastControlOutput(const QString &result, bool isStream, const 
 
 void Widget::broadcastControlState(const QString &stateString, SIGNAL_STATE level)
 {
-    if (!isHostControlled()) return;
+    if (!isHostControlled() && !acpBridgeConnected_) return;
     QJsonObject payload;
     payload.insert(QStringLiteral("type"), QStringLiteral("state_log"));
     payload.insert(QStringLiteral("text"), stateString);
     payload.insert(QStringLiteral("level"), static_cast<int>(level));
-    controlChannel_->sendToController(payload);
+    sendToRemotePeers(payload);
 }
 
 void Widget::appendControlStateLog(const QString &text, SIGNAL_STATE level, const QString &prefix, bool mirrorToModelInfo)
@@ -1058,24 +1375,24 @@ void Widget::logControlInfoToModelInfo(const QString &line)
 
 void Widget::broadcastControlKv(int used, int cap, int percent)
 {
-    if (!isHostControlled()) return;
+    if (!isHostControlled() && !acpBridgeConnected_) return;
     QJsonObject payload;
     payload.insert(QStringLiteral("type"), QStringLiteral("kv"));
     payload.insert(QStringLiteral("used"), used);
     payload.insert(QStringLiteral("cap"), cap);
     payload.insert(QStringLiteral("percent"), percent);
-    controlChannel_->sendToController(payload);
+    sendToRemotePeers(payload);
 }
 
 void Widget::broadcastControlUiPhase(const QString &phase)
 {
-    if (!isHostControlled()) return;
+    if (!isHostControlled() && !acpBridgeConnected_) return;
     QJsonObject payload;
     payload.insert(QStringLiteral("type"), QStringLiteral("ui_state"));
     payload.insert(QStringLiteral("phase"), phase);
     payload.insert(QStringLiteral("is_run"), is_run);
     payload.insert(QStringLiteral("state"), ui_state == CHAT_STATE ? QStringLiteral("chat") : QStringLiteral("complete"));
-    controlChannel_->sendToController(payload);
+    sendToRemotePeers(payload);
 }
 
 void Widget::applyControlMonitor(const QJsonObject &mon)
@@ -1209,51 +1526,14 @@ void Widget::handleControlHostCommand(const QJsonObject &payload)
     }
     if (name == QStringLiteral("send"))
     {
-        if (is_run || turnActive_)
+        QString errorMessage;
+        if (!sendBridgeText(payload.value(QStringLiteral("text")).toString(), &errorMessage))
         {
             QJsonObject warn;
             warn.insert(QStringLiteral("type"), QStringLiteral("state_log"));
-            warn.insert(QStringLiteral("text"), jtr("control command blocked"));
+            warn.insert(QStringLiteral("text"), errorMessage);
             warn.insert(QStringLiteral("level"), static_cast<int>(WRONG_SIGNAL));
             controlChannel_->sendToController(warn);
-            return;
-        }
-        const QString text = payload.value(QStringLiteral("text")).toString();
-        if (text.trimmed().isEmpty())
-        {
-            QJsonObject warn;
-            warn.insert(QStringLiteral("type"), QStringLiteral("state_log"));
-            warn.insert(QStringLiteral("text"), jtr("control send missing"));
-            warn.insert(QStringLiteral("level"), static_cast<int>(WRONG_SIGNAL));
-            controlChannel_->sendToController(warn);
-            return;
-        }
-        struct DraftBackup
-        {
-            QString text;
-            QStringList attachments;
-        };
-        DraftBackup backup;
-        if (ui && ui->input && ui->input->textEdit)
-        {
-            backup.text = ui->input->textEdit->toPlainText();
-            QStringList paths = ui->input->imageFilePaths();
-            paths.append(ui->input->documentFilePaths());
-            paths.append(ui->input->wavFilePaths());
-            backup.attachments = paths;
-        }
-        if (ui && ui->input && ui->input->textEdit)
-        {
-            ui->input->textEdit->setPlainText(text);
-            ui->input->clearThumbnails();
-            on_send_clicked();
-            if (!backup.text.isEmpty() || !backup.attachments.isEmpty())
-            {
-                ui->input->textEdit->setPlainText(backup.text);
-                ui->input->clearThumbnails();
-                if (!backup.attachments.isEmpty())
-                    ui->input->addFiles(backup.attachments);
-            }
         }
         return;
     }

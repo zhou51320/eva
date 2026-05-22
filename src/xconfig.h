@@ -170,6 +170,7 @@ inline const QStringList DEFAULT_CUDA_RUNTIME_LIB_PATTERNS = {};
 #define DEFAULT_NGL 0
 #define DEFAULT_SERVER_PORT "8080"             // 默认服务端口
 #define DEFAULT_CONTROL_PORT 61550             // 远程控制监听端口
+#define DEFAULT_ACP_BRIDGE_PORT 61551          // ACP -> EVA 本机桥接端口
 // 设置窗口 nctx 滑条的安全上限（QSlider 仅支持 int，避免使用超范围常量导致溢出告警）
 #define DEFAULT_NCTX_SLIDER_MAX 262144
 

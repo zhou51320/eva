@@ -71,7 +71,8 @@ QString normalizeEndpoint(const QString &rawEndpoint)
 AcpRuntime::AcpRuntime(const LaunchOptions &options, QObject *parent)
     : QObject(parent),
       options_(options),
-      serverManager_(new LocalServerManager(this, QCoreApplication::applicationDirPath()))
+      serverManager_(new LocalServerManager(this, QCoreApplication::applicationDirPath())),
+      bridgeClient_(new AcpBridgeClient(this))
 {
     connect(serverManager_, &LocalServerManager::serverOutput, this, &AcpRuntime::onServerOutput);
     connect(serverManager_, &LocalServerManager::serverState, this, &AcpRuntime::onServerState);
@@ -124,28 +125,44 @@ QJsonObject AcpRuntime::healthPayload() const
 QJsonObject AcpRuntime::modelsPayload() const
 {
     QJsonArray data;
-    if (isLinkMode())
+    QString bridgeError;
+    if (bridgeModeEnabled())
     {
-        const QJsonObject remote = remoteModelObject();
-        if (!remote.isEmpty()) data.append(remote);
+        data = bridgeClient_->listModels(&bridgeError);
     }
-    else
+    if (data.isEmpty())
     {
-        const QStringList models = discoverLocalModels();
-        for (const QString &path : models)
+        if (isLinkMode())
         {
-            data.append(localModelObject(path));
+            const QJsonObject remote = remoteModelObject();
+            if (!remote.isEmpty()) data.append(remote);
+        }
+        else
+        {
+            const QStringList models = discoverLocalModels();
+            for (const QString &path : models)
+            {
+                data.append(localModelObject(path));
+            }
         }
     }
 
     QJsonObject payload;
     payload.insert(QStringLiteral("object"), QStringLiteral("list"));
     payload.insert(QStringLiteral("data"), data);
+    if (!bridgeError.isEmpty()) payload.insert(QStringLiteral("bridge_error"), bridgeError);
     return payload;
 }
 
 QJsonObject AcpRuntime::backendStatePayload() const
 {
+    QString bridgeError;
+    if (bridgeModeEnabled())
+    {
+        QJsonObject bridgeState = bridgeClient_->getState(&bridgeError);
+        if (!bridgeState.isEmpty()) return bridgeState;
+    }
+
     QJsonObject payload;
     payload.insert(QStringLiteral("mode"), isLinkMode() ? QStringLiteral("link") : QStringLiteral("local"));
     payload.insert(QStringLiteral("state"), lifecycleState_);
@@ -167,13 +184,27 @@ QJsonObject AcpRuntime::backendStatePayload() const
     payload.insert(QStringLiteral("lora_path"), settings_.lorapath);
     payload.insert(QStringLiteral("api_endpoint"), isLinkMode() ? apis_.api_endpoint : QString());
     payload.insert(QStringLiteral("api_model"), isLinkMode() ? apis_.api_model : QString());
-    payload.insert(QStringLiteral("last_error"), lastError_);
+    payload.insert(QStringLiteral("last_error"), bridgeError.isEmpty() ? lastError_ : bridgeError);
     payload.insert(QStringLiteral("last_output_tail"), lastOutput_);
     return payload;
 }
 
 bool AcpRuntime::loadBackend(const QJsonObject &request, QString *errorMessage)
 {
+    if (bridgeModeEnabled())
+    {
+        QJsonObject state = bridgeClient_->applyLoad(request, errorMessage);
+        if (!state.isEmpty())
+        {
+            return true;
+        }
+        if (errorMessage && errorMessage->isEmpty())
+        {
+            *errorMessage = QStringLiteral("Bridge load failed.");
+        }
+        return false;
+    }
+
     const QString requestedMode = request.value(QStringLiteral("mode")).toString().trimmed().toLower();
     const bool wantsLinkMode =
         requestedMode == QStringLiteral("link") ||
@@ -553,6 +584,14 @@ bool AcpRuntime::linkModeEnabled() const
     return isLinkMode();
 }
 
+bool AcpRuntime::bridgeModeEnabled() const
+{
+    if (!bridgeClient_) return false;
+    if (bridgeClient_->isConnected()) return true;
+    QString errorMessage;
+    return const_cast<AcpBridgeClient *>(bridgeClient_)->ensureConnected(300, &errorMessage);
+}
+
 QString AcpRuntime::modelsEndpoint() const
 {
     if (isLinkMode())
@@ -581,6 +620,71 @@ QString AcpRuntime::configuredApiKey() const
 QString AcpRuntime::configuredApiModel() const
 {
     return isLinkMode() ? apis_.api_model : QString();
+}
+
+bool AcpRuntime::resetConversation(QString *errorMessage)
+{
+    if (bridgeClient_ && bridgeClient_->resetConversation(errorMessage)) return true;
+    if (errorMessage) *errorMessage = QStringLiteral("Bridge reset unavailable.");
+    return false;
+}
+
+QJsonObject AcpRuntime::chatCompletion(const QJsonObject &request, QString *errorMessage)
+{
+    if (bridgeClient_)
+    {
+        QString text;
+        const QJsonArray messages = request.value(QStringLiteral("messages")).toArray();
+        for (int i = messages.size() - 1; i >= 0; --i)
+        {
+            const QJsonObject message = messages.at(i).toObject();
+            if (message.value(QStringLiteral("role")).toString() == QStringLiteral("user"))
+            {
+                text = message.value(QStringLiteral("content")).toString();
+                if (!text.isEmpty()) break;
+            }
+        }
+        if (text.trimmed().isEmpty())
+        {
+            if (errorMessage) *errorMessage = QStringLiteral("Bridge mode currently requires the latest user text.");
+            return QJsonObject();
+        }
+
+        AcpBridgeClient::ChatResult result;
+        if (!bridgeClient_->sendText(text, &result, errorMessage))
+        {
+            return QJsonObject();
+        }
+
+        QString stateError;
+        const QJsonObject liveState = bridgeClient_->getState(&stateError, 1500);
+        const QString liveModel = liveState.value(QStringLiteral("current_model")).toString();
+
+        QJsonObject message;
+        message.insert(QStringLiteral("role"), QStringLiteral("assistant"));
+        message.insert(QStringLiteral("content"), result.assistantText);
+        if (!result.reasoningText.isEmpty())
+            message.insert(QStringLiteral("reasoning"), result.reasoningText);
+
+        QJsonObject choice;
+        choice.insert(QStringLiteral("index"), 0);
+        choice.insert(QStringLiteral("message"), message);
+        choice.insert(QStringLiteral("finish_reason"), QStringLiteral("stop"));
+
+        QJsonArray choices;
+        choices.append(choice);
+
+        QJsonObject response;
+        response.insert(QStringLiteral("id"), QStringLiteral("chatcmpl-bridge"));
+        response.insert(QStringLiteral("object"), QStringLiteral("chat.completion"));
+        response.insert(QStringLiteral("created"), static_cast<qint64>(QDateTime::currentSecsSinceEpoch()));
+        response.insert(QStringLiteral("model"), liveModel.isEmpty() ? currentModelId() : liveModel);
+        response.insert(QStringLiteral("choices"), choices);
+        return response;
+    }
+
+    if (errorMessage) *errorMessage = QStringLiteral("Bridge mode unavailable.");
+    return QJsonObject();
 }
 
 bool AcpRuntime::isLinkMode() const

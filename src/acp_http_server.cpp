@@ -194,6 +194,23 @@ void AcpHttpServer::handleRequest(QTcpSocket *socket,
         return;
     }
 
+    if (method == QByteArrayLiteral("POST") && path == QStringLiteral("/api/runtime/reset"))
+    {
+        QString errorMessage;
+        if (!runtime_->resetConversation(&errorMessage))
+        {
+            QJsonObject payload;
+            payload.insert(QStringLiteral("error"), errorMessage);
+            writeJson(socket, 400, QByteArrayLiteral("Bad Request"), payload);
+            return;
+        }
+        QJsonObject payload;
+        payload.insert(QStringLiteral("ok"), true);
+        payload.insert(QStringLiteral("state"), runtime_->backendStatePayload());
+        writeJson(socket, 200, QByteArrayLiteral("OK"), payload);
+        return;
+    }
+
     if (method == QByteArrayLiteral("POST") && path == QStringLiteral("/api/backend/load"))
     {
         QJsonObject request;
@@ -227,7 +244,7 @@ void AcpHttpServer::handleRequest(QTcpSocket *socket,
         return;
     }
 
-    if (path == QStringLiteral("/api/backend/load") || path == QStringLiteral("/v1/chat/completions") || path == QStringLiteral("/v1/models"))
+    if (path == QStringLiteral("/api/backend/load") || path == QStringLiteral("/api/runtime/reset") || path == QStringLiteral("/v1/chat/completions") || path == QStringLiteral("/v1/models"))
     {
         QJsonObject payload;
         payload.insert(QStringLiteral("error"), QStringLiteral("Method not allowed"));
@@ -285,7 +302,7 @@ QByteArray AcpHttpServer::contentTypeForPath(const QString &path) const
 
 void AcpHttpServer::proxyModels(QTcpSocket *socket, const QMap<QByteArray, QByteArray> &headers)
 {
-    if (!runtime_ || !runtime_->linkModeEnabled())
+    if (!runtime_ || runtime_->bridgeModeEnabled() || !runtime_->linkModeEnabled())
     {
         writeJson(socket, 200, QByteArrayLiteral("OK"), runtime_ ? runtime_->modelsPayload() : QJsonObject());
         return;
@@ -345,6 +362,50 @@ void AcpHttpServer::proxyChatCompletions(QTcpSocket *socket,
         if (!fallbackModel.isEmpty()) requestObject.insert(QStringLiteral("model"), fallbackModel);
     }
     const bool streaming = requestObject.value(QStringLiteral("stream")).toBool(false);
+
+    if (runtime_->bridgeModeEnabled())
+    {
+        QString errorMessage;
+        const QJsonObject response = runtime_->chatCompletion(requestObject, &errorMessage);
+        if (response.isEmpty())
+        {
+            QJsonObject payload;
+            payload.insert(QStringLiteral("error"), errorMessage.isEmpty() ? QStringLiteral("Bridge chat failed.") : errorMessage);
+            writeJson(socket, 502, QByteArrayLiteral("Bad Gateway"), payload);
+            return;
+        }
+        if (!streaming)
+        {
+            writeJson(socket, 200, QByteArrayLiteral("OK"), response);
+            return;
+        }
+
+        writeStreamHeaders(socket, 200, QByteArrayLiteral("OK"), QByteArrayLiteral("text/event-stream; charset=utf-8"));
+        const QJsonObject message = response.value(QStringLiteral("choices")).toArray().value(0).toObject().value(QStringLiteral("message")).toObject();
+        QJsonObject delta;
+        delta.insert(QStringLiteral("role"), QStringLiteral("assistant"));
+        delta.insert(QStringLiteral("content"), message.value(QStringLiteral("content")).toString());
+        if (message.contains(QStringLiteral("reasoning")))
+            delta.insert(QStringLiteral("reasoning"), message.value(QStringLiteral("reasoning")).toString());
+        QJsonObject choice;
+        choice.insert(QStringLiteral("index"), 0);
+        choice.insert(QStringLiteral("delta"), delta);
+        choice.insert(QStringLiteral("finish_reason"), QJsonValue());
+        QJsonArray choices;
+        choices.append(choice);
+        QJsonObject chunk;
+        chunk.insert(QStringLiteral("id"), response.value(QStringLiteral("id")).toString());
+        chunk.insert(QStringLiteral("object"), QStringLiteral("chat.completion.chunk"));
+        chunk.insert(QStringLiteral("created"), response.value(QStringLiteral("created")).toInt());
+        chunk.insert(QStringLiteral("model"), response.value(QStringLiteral("model")).toString());
+        chunk.insert(QStringLiteral("choices"), choices);
+        socket->write("data: ");
+        socket->write(QJsonDocument(chunk).toJson(QJsonDocument::Compact));
+        socket->write("\n\n");
+        socket->write("data: [DONE]\n\n");
+        socket->disconnectFromHost();
+        return;
+    }
 
     const QString endpoint = runtime_->chatCompletionsEndpoint();
     const QUrl url = QUrl::fromUserInput(endpoint);
