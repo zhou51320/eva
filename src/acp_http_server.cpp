@@ -2,7 +2,10 @@
 
 #include "acp_runtime.h"
 
+#include <QCoreApplication>
+#include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QHostAddress>
 #include <QJsonDocument>
 #include <QNetworkAccessManager>
@@ -14,6 +17,13 @@
 
 namespace
 {
+QString externalWebRoot()
+{
+    const QString envRoot = qEnvironmentVariable("EVA_ACP_WEB_ROOT").trimmed();
+    if (!envRoot.isEmpty()) return envRoot;
+    return QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("acp_web"));
+}
+
 QByteArray reasonPhrase(int statusCode, const QByteArray &fallback)
 {
     if (!fallback.isEmpty()) return fallback;
@@ -286,6 +296,21 @@ bool AcpHttpServer::tryServeStatic(QTcpSocket *socket, const QString &path)
 
 QByteArray AcpHttpServer::staticContent(const QString &resourcePath) const
 {
+    const QString diskRoot = externalWebRoot();
+    QString diskPath;
+    if (resourcePath.endsWith(QStringLiteral("index.html")))
+        diskPath = QDir(diskRoot).filePath(QStringLiteral("index.html"));
+    else if (resourcePath.endsWith(QStringLiteral("styles.css")))
+        diskPath = QDir(diskRoot).filePath(QStringLiteral("styles.css"));
+    else if (resourcePath.endsWith(QStringLiteral("app.js")))
+        diskPath = QDir(diskRoot).filePath(QStringLiteral("app.js"));
+
+    if (!diskPath.isEmpty() && QFileInfo::exists(diskPath))
+    {
+        QFile diskFile(diskPath);
+        if (diskFile.open(QIODevice::ReadOnly)) return diskFile.readAll();
+    }
+
     QFile file(resourcePath);
     if (!file.open(QIODevice::ReadOnly)) return QByteArray();
     return file.readAll();

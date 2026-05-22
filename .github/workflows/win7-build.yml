@@ -156,6 +156,11 @@ jobs:
 
           Copy-Item "$binDir\*" $packageDir -Recurse -Force
 
+          $webDir = Join-Path $pwd 'resource/acp_web'
+          if (Test-Path $webDir) {
+            Copy-Item $webDir (Join-Path $packageDir 'acp_web') -Recurse -Force
+          }
+
           $packagedMainExe = Join-Path $packageDir $mainExe.Name
           if (-not (Test-Path $packagedMainExe)) {
             throw "Packaged executable missing after copy: $packagedMainExe"
@@ -181,6 +186,11 @@ jobs:
           $packagedAcpExe = Get-ChildItem -Path $packageDir -Filter 'eva_acp*.exe' | Select-Object -First 1
           if (-not $packagedAcpExe) {
             throw "Packaged ACP executable missing from package root: $packageDir"
+          }
+
+          $webRoot = Join-Path $packageDir 'acp_web'
+          if (-not (Test-Path (Join-Path $webRoot 'index.html'))) {
+            throw "ACP web assets missing from package: $webRoot"
           }
 
           $skillsDir = Join-Path $packageDir 'EVA_SKILLS'
