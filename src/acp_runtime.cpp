@@ -6,6 +6,7 @@
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QSettings>
+#include <QUrl>
 #include <algorithm>
 
 #include "app/app_bootstrap.h"
@@ -13,6 +14,7 @@
 #include "app/default_model_finder.h"
 #include "utils/devicemanager.h"
 #include "utils/flowtracer.h"
+#include "utils/openai_compat.h"
 #include "utils/startuplogger.h"
 
 namespace
@@ -35,6 +37,34 @@ QString readStringSetting(QSettings &settings, const QString &key, const QString
 {
     const QString value = settings.value(key, fallback).toString().trimmed();
     return value.isEmpty() ? fallback : value;
+}
+
+QString normalizeEndpoint(const QString &rawEndpoint)
+{
+    QString clean = rawEndpoint.trimmed();
+    if (clean.isEmpty()) return clean;
+
+    QUrl url = QUrl::fromUserInput(clean);
+    if (!url.isValid()) return clean;
+    const QString scheme = url.scheme().trimmed().toLower();
+    if (scheme.isEmpty())
+    {
+        const QString host = url.host().trimmed().toLower();
+        const bool isLocal = (host == QStringLiteral("127.0.0.1") ||
+                              host == QStringLiteral("localhost") ||
+                              host == QStringLiteral("::1"));
+        url.setScheme(isLocal ? QStringLiteral("http") : QStringLiteral("https"));
+    }
+
+    QString path = url.path();
+    while (path.endsWith(QLatin1Char('/')) && path.length() > 1) path.chop(1);
+    if (path.toLower().endsWith(QStringLiteral("/v1")))
+    {
+        path.chop(3);
+        if (path.isEmpty()) path = QStringLiteral("/");
+        url.setPath(path);
+    }
+    return url.toString(QUrl::FullyDecoded).trimmed();
 }
 }
 
@@ -94,10 +124,18 @@ QJsonObject AcpRuntime::healthPayload() const
 QJsonObject AcpRuntime::modelsPayload() const
 {
     QJsonArray data;
-    const QStringList models = discoverLocalModels();
-    for (const QString &path : models)
+    if (isLinkMode())
     {
-        data.append(modelObject(path));
+        const QJsonObject remote = remoteModelObject();
+        if (!remote.isEmpty()) data.append(remote);
+    }
+    else
+    {
+        const QStringList models = discoverLocalModels();
+        for (const QString &path : models)
+        {
+            data.append(localModelObject(path));
+        }
     }
 
     QJsonObject payload;
@@ -109,23 +147,26 @@ QJsonObject AcpRuntime::modelsPayload() const
 QJsonObject AcpRuntime::backendStatePayload() const
 {
     QJsonObject payload;
+    payload.insert(QStringLiteral("mode"), isLinkMode() ? QStringLiteral("link") : QStringLiteral("local"));
     payload.insert(QStringLiteral("state"), lifecycleState_);
     payload.insert(QStringLiteral("ready"), backendReady_);
     payload.insert(QStringLiteral("endpoint"), backendEndpoint());
     payload.insert(QStringLiteral("current_model"), currentModelId());
-    payload.insert(QStringLiteral("current_model_path"), settings_.modelpath);
-    payload.insert(QStringLiteral("backend_choice"), backendChoice_);
-    payload.insert(QStringLiteral("backend_resolved"), backendResolved_);
-    payload.insert(QStringLiteral("available_backends"), QJsonArray::fromStringList(DeviceManager::availableBackends()));
-    payload.insert(QStringLiteral("backend_program_path"), DeviceManager::programPath(QStringLiteral("llama-server-main")));
-    payload.insert(QStringLiteral("server_running"), serverManager_ && serverManager_->isRunning());
-    payload.insert(QStringLiteral("port"), backendPort_);
+    payload.insert(QStringLiteral("current_model_path"), isLinkMode() ? QString() : settings_.modelpath);
+    payload.insert(QStringLiteral("backend_choice"), isLinkMode() ? QStringLiteral("link") : backendChoice_);
+    payload.insert(QStringLiteral("backend_resolved"), isLinkMode() ? QStringLiteral("remote") : backendResolved_);
+    payload.insert(QStringLiteral("available_backends"), isLinkMode() ? QJsonArray() : QJsonArray::fromStringList(DeviceManager::availableBackends()));
+    payload.insert(QStringLiteral("backend_program_path"), isLinkMode() ? QString() : DeviceManager::programPath(QStringLiteral("llama-server-main")));
+    payload.insert(QStringLiteral("server_running"), !isLinkMode() && serverManager_ && serverManager_->isRunning());
+    payload.insert(QStringLiteral("port"), isLinkMode() ? QString() : backendPort_);
     payload.insert(QStringLiteral("nctx"), settings_.nctx);
     payload.insert(QStringLiteral("ngl"), settings_.ngl);
     payload.insert(QStringLiteral("nthread"), settings_.nthread);
     payload.insert(QStringLiteral("parallel"), settings_.hid_parallel);
     payload.insert(QStringLiteral("mmproj_path"), settings_.mmprojpath);
     payload.insert(QStringLiteral("lora_path"), settings_.lorapath);
+    payload.insert(QStringLiteral("api_endpoint"), apis_.api_endpoint);
+    payload.insert(QStringLiteral("api_model"), apis_.api_model);
     payload.insert(QStringLiteral("last_error"), lastError_);
     payload.insert(QStringLiteral("last_output_tail"), lastOutput_);
     return payload;
@@ -133,6 +174,60 @@ QJsonObject AcpRuntime::backendStatePayload() const
 
 bool AcpRuntime::loadBackend(const QJsonObject &request, QString *errorMessage)
 {
+    const QString requestedMode = request.value(QStringLiteral("mode")).toString().trimmed().toLower();
+    const bool wantsLinkMode =
+        requestedMode == QStringLiteral("link") ||
+        request.contains(QStringLiteral("api_endpoint")) ||
+        request.contains(QStringLiteral("endpoint")) ||
+        request.contains(QStringLiteral("api_model")) ||
+        request.contains(QStringLiteral("api_key"));
+
+    if (wantsLinkMode)
+    {
+        QString endpoint = apis_.api_endpoint;
+        if (request.contains(QStringLiteral("api_endpoint")))
+            endpoint = request.value(QStringLiteral("api_endpoint")).toString();
+        else if (request.contains(QStringLiteral("endpoint")))
+            endpoint = request.value(QStringLiteral("endpoint")).toString();
+        endpoint = normalizeEndpoint(endpoint);
+        if (endpoint.isEmpty())
+        {
+            if (errorMessage) *errorMessage = QStringLiteral("Remote api_endpoint is required in link mode.");
+            return false;
+        }
+
+        const QUrl baseUrl = QUrl::fromUserInput(endpoint);
+        if (!baseUrl.isValid())
+        {
+            if (errorMessage) *errorMessage = QStringLiteral("Invalid remote endpoint: %1").arg(endpoint);
+            return false;
+        }
+
+        if (request.contains(QStringLiteral("api_key")))
+            apis_.api_key = request.value(QStringLiteral("api_key")).toString().trimmed();
+        if (request.contains(QStringLiteral("api_model")))
+            apis_.api_model = request.value(QStringLiteral("api_model")).toString().trimmed();
+
+        apis_.api_endpoint = endpoint;
+        apis_.api_chat_endpoint = OpenAiCompat::chatCompletionsPath(baseUrl);
+        apis_.api_completion_endpoint = OpenAiCompat::completionsPath(baseUrl);
+        apis_.is_local_backend = false;
+        uiMode_ = LINK_MODE;
+        lifecycleState_ = QStringLiteral("link");
+        backendReady_ = true;
+        readyEndpoint_.clear();
+        backendResolved_ = QStringLiteral("remote");
+        lastError_.clear();
+        if (serverManager_ && serverManager_->isRunning())
+        {
+            serverManager_->stop();
+        }
+        saveConfig();
+        return true;
+    }
+
+    uiMode_ = LOCAL_MODE;
+    apis_.is_local_backend = true;
     if (request.contains(QStringLiteral("model_path")))
     {
         settings_.modelpath = request.value(QStringLiteral("model_path")).toString().trimmed();
@@ -286,6 +381,7 @@ void AcpRuntime::loadConfig()
     settings.setIniCodec("utf-8");
     ConfigMigrator::migrate(settings);
 
+    uiMode_ = static_cast<EVA_MODE>(settings.value(QStringLiteral("ui_mode"), 0).toInt());
     settings_.modelpath = settings.value(QStringLiteral("modelpath"), QString()).toString();
     settings_.mmprojpath = settings.value(QStringLiteral("mmprojpath"), QString()).toString();
     settings_.lorapath = settings.value(QStringLiteral("lorapath"), QString()).toString();
@@ -298,6 +394,16 @@ void AcpRuntime::loadConfig()
     settings_.hid_use_mlock = settings.value(QStringLiteral("hid_use_mlock"), DEFAULT_USE_MLOCCK).toBool();
     settings_.hid_flash_attn = settings.value(QStringLiteral("hid_flash_attn"), DEFAULT_FLASH_ATTN).toBool();
     settings_.reasoning_effort = readStringSetting(settings, QStringLiteral("reasoning_effort"), QStringLiteral("auto"));
+
+    apis_.api_endpoint = normalizeEndpoint(settings.value(QStringLiteral("api_endpoint"), QString()).toString());
+    apis_.api_key = settings.value(QStringLiteral("api_key"), QString()).toString().trimmed();
+    apis_.api_model = settings.value(QStringLiteral("api_model"), QString()).toString().trimmed();
+    {
+        const QUrl baseUrl = QUrl::fromUserInput(apis_.api_endpoint);
+        apis_.api_chat_endpoint = OpenAiCompat::chatCompletionsPath(baseUrl);
+        apis_.api_completion_endpoint = OpenAiCompat::completionsPath(baseUrl);
+        apis_.is_local_backend = (uiMode_ == LOCAL_MODE);
+    }
 
     backendPort_ = readStringSetting(settings, QStringLiteral("port"), QStringLiteral(DEFAULT_SERVER_PORT));
     backendChoice_ = readStringSetting(settings, QStringLiteral("device_backend"), QStringLiteral("auto")).toLower();
@@ -313,10 +419,17 @@ void AcpRuntime::loadConfig()
     settings.endGroup();
     DeviceManager::setUserChoice(backendChoice_);
 
-    if (settings_.modelpath.isEmpty())
+    if (!isLinkMode() && settings_.modelpath.isEmpty())
     {
         const DefaultModelPaths paths = DefaultModelFinder::discover(ctx_.modelsDir);
         settings_.modelpath = paths.llmModel;
+    }
+
+    if (isLinkMode())
+    {
+        lifecycleState_ = QStringLiteral("link");
+        backendReady_ = !apis_.api_endpoint.isEmpty();
+        backendResolved_ = QStringLiteral("remote");
     }
 }
 
@@ -324,7 +437,7 @@ void AcpRuntime::saveConfig() const
 {
     QSettings settings(configPath(), QSettings::IniFormat);
     settings.setIniCodec("utf-8");
-    settings.setValue(QStringLiteral("ui_mode"), 0);
+    settings.setValue(QStringLiteral("ui_mode"), static_cast<int>(uiMode_));
     settings.setValue(QStringLiteral("modelpath"), settings_.modelpath);
     settings.setValue(QStringLiteral("mmprojpath"), settings_.mmprojpath);
     settings.setValue(QStringLiteral("lorapath"), settings_.lorapath);
@@ -339,6 +452,12 @@ void AcpRuntime::saveConfig() const
     settings.setValue(QStringLiteral("reasoning_effort"), settings_.reasoning_effort);
     settings.setValue(QStringLiteral("port"), backendPort_);
     settings.setValue(QStringLiteral("device_backend"), backendChoice_);
+    if (isLinkMode())
+    {
+        settings.setValue(QStringLiteral("api_endpoint"), apis_.api_endpoint);
+        settings.setValue(QStringLiteral("api_key"), apis_.api_key);
+        settings.setValue(QStringLiteral("api_model"), apis_.api_model);
+    }
     settings.sync();
 }
 
@@ -360,6 +479,7 @@ QString AcpRuntime::configPath() const
 
 QString AcpRuntime::backendEndpoint() const
 {
+    if (isLinkMode()) return apis_.api_endpoint;
     if (!readyEndpoint_.isEmpty()) return readyEndpoint_;
     return QStringLiteral("http://127.0.0.1:%1").arg(backendPort_);
 }
@@ -376,7 +496,7 @@ QStringList AcpRuntime::discoverLocalModels() const
             models.append(canonicalPath(it.next()));
         }
     }
-    if (!settings_.modelpath.isEmpty())
+    if (!settings_.modelpath.isEmpty() && QFileInfo::exists(settings_.modelpath))
     {
         const QString current = canonicalPath(settings_.modelpath);
         if (!current.isEmpty() && !models.contains(current)) models.append(current);
@@ -389,7 +509,7 @@ QStringList AcpRuntime::discoverLocalModels() const
     return models;
 }
 
-QJsonObject AcpRuntime::modelObject(const QString &path) const
+QJsonObject AcpRuntime::localModelObject(const QString &path) const
 {
     QFileInfo info(path);
     const QString canonical = canonicalPath(path);
@@ -401,16 +521,36 @@ QJsonObject AcpRuntime::modelObject(const QString &path) const
     model.insert(QStringLiteral("owned_by"), QStringLiteral("eva-acp"));
     model.insert(QStringLiteral("path"), canonical);
     model.insert(QStringLiteral("current"), canonical == canonicalPath(settings_.modelpath));
+    model.insert(QStringLiteral("source"), QStringLiteral("local"));
+    return model;
+}
+
+QJsonObject AcpRuntime::remoteModelObject() const
+{
+    if (apis_.api_model.isEmpty()) return QJsonObject();
+    QJsonObject model;
+    model.insert(QStringLiteral("id"), apis_.api_model);
+    model.insert(QStringLiteral("object"), QStringLiteral("model"));
+    model.insert(QStringLiteral("owned_by"), QStringLiteral("eva-acp"));
+    model.insert(QStringLiteral("current"), true);
+    model.insert(QStringLiteral("source"), QStringLiteral("remote"));
+    model.insert(QStringLiteral("endpoint"), apis_.api_endpoint);
     return model;
 }
 
 QString AcpRuntime::currentModelId() const
 {
-    if (settings_.modelpath.isEmpty()) return QString();
+    if (isLinkMode()) return apis_.api_model;
+    if (settings_.modelpath.isEmpty() || !QFileInfo::exists(settings_.modelpath)) return QString();
     const QFileInfo info(settings_.modelpath);
     const QString canonical = canonicalPath(settings_.modelpath);
     const QString relative = ctx_.modelsDir.isEmpty() ? info.fileName() : QDir(ctx_.modelsDir).relativeFilePath(canonical);
     return relative.isEmpty() ? info.fileName() : relative;
+}
+
+bool AcpRuntime::isLinkMode() const
+{
+    return uiMode_ == LINK_MODE && !apis_.api_endpoint.trimmed().isEmpty();
 }
 
 void AcpRuntime::appendLogTail(const QString &chunk)
@@ -422,6 +562,11 @@ void AcpRuntime::appendLogTail(const QString &chunk)
 
 void AcpRuntime::refreshBackendProbe()
 {
+    if (isLinkMode())
+    {
+        backendResolved_ = QStringLiteral("remote");
+        return;
+    }
     backendResolved_ = DeviceManager::effectiveBackend();
     DeviceManager::programPath(QStringLiteral("llama-server-main"));
     const QString lastResolved = DeviceManager::lastResolvedDeviceFor(QStringLiteral("llama-server-main"));

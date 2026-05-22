@@ -45,10 +45,15 @@ class AcpRuntime : public QObject
     QString configPath() const;
     QString backendEndpoint() const;
     QStringList discoverLocalModels() const;
-    QJsonObject modelObject(const QString &path) const;
+    QJsonObject localModelObject(const QString &path) const;
+    QJsonObject remoteModelObject() const;
     QString currentModelId() const;
+    bool isLinkMode() const;
     void appendLogTail(const QString &chunk);
     void refreshBackendProbe();
+
+    APIS apis_;
+    EVA_MODE uiMode_ = LOCAL_MODE;
 
     LaunchOptions options_;
     AppContext ctx_;
