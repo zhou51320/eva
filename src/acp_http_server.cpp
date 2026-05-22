@@ -381,7 +381,9 @@ void AcpHttpServer::proxyChatCompletions(QTcpSocket *socket,
         }
 
         writeStreamHeaders(socket, 200, QByteArrayLiteral("OK"), QByteArrayLiteral("text/event-stream; charset=utf-8"));
-        const QJsonObject message = response.value(QStringLiteral("choices")).toArray().value(0).toObject().value(QStringLiteral("message")).toObject();
+        const QJsonArray choicesArray = response.value(QStringLiteral("choices")).toArray();
+        const QJsonObject firstChoice = choicesArray.isEmpty() ? QJsonObject() : choicesArray.at(0).toObject();
+        const QJsonObject message = firstChoice.value(QStringLiteral("message")).toObject();
         QJsonObject delta;
         delta.insert(QStringLiteral("role"), QStringLiteral("assistant"));
         delta.insert(QStringLiteral("content"), message.value(QStringLiteral("content")).toString());
