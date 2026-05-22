@@ -73,7 +73,7 @@ void Widget::ui_state_loading()
     ui->set->setEnabled(0);          // 设置按钮
     ui->load->setEnabled(0);         // 装载按钮
     ui->input->textEdit->setFocus(); // 设置输入区为焦点
-    if (isHostControlled()) broadcastControlUiPhase(QStringLiteral("loading"));
+    if (isHostControlled() || acpBridgeConnected_) broadcastControlUiPhase(QStringLiteral("loading"));
 }
 
 // 推理中界面状态
@@ -86,7 +86,7 @@ void Widget::ui_state_pushing()
     ui->set->setEnabled(0);
     ui->reset->setEnabled(1);
     ui->send->setEnabled(0);
-    if (isHostControlled()) broadcastControlUiPhase(QStringLiteral("pushing"));
+    if (isHostControlled() || acpBridgeConnected_) broadcastControlUiPhase(QStringLiteral("pushing"));
 }
 
 // 服务模式已移除
@@ -201,7 +201,7 @@ void Widget::ui_state_normal()
     {
         change_api_dialog(1);
     }
-    if (isHostControlled()) broadcastControlUiPhase(QStringLiteral("normal"));
+    if (isHostControlled() || acpBridgeConnected_) broadcastControlUiPhase(QStringLiteral("normal"));
 }
 
 // After backend exceptions or unexpected stops, ensure core controls are usable.
@@ -238,7 +238,7 @@ void Widget::ui_state_recoding()
     {
         ui->input->textEdit->setPlaceholderText(jtr("recoding") + "... " + QString::number(float(audio_time) / 1000.0, 'f', 2) + "s " + jtr("push f2 to stop"));
     }
-    if (isHostControlled()) broadcastControlUiPhase(QStringLiteral("recording"));
+    if (isHostControlled() || acpBridgeConnected_) broadcastControlUiPhase(QStringLiteral("recording"));
 }
 
 void Widget::applyWakeUiLock(bool locked)
