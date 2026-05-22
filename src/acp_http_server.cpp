@@ -2,6 +2,7 @@
 
 #include "acp_runtime.h"
 
+#include <QFile>
 #include <QHostAddress>
 #include <QJsonDocument>
 #include <QNetworkAccessManager>
@@ -164,15 +165,8 @@ void AcpHttpServer::handleRequest(QTcpSocket *socket,
         return;
     }
 
-    if (method == QByteArrayLiteral("GET") && path == QStringLiteral("/"))
+    if (method == QByteArrayLiteral("GET") && tryServeStatic(socket, path))
     {
-        QJsonObject payload;
-        payload.insert(QStringLiteral("service"), QStringLiteral("eva-acp"));
-        payload.insert(QStringLiteral("health"), QStringLiteral("/health"));
-        payload.insert(QStringLiteral("models"), QStringLiteral("/v1/models"));
-        payload.insert(QStringLiteral("backend_state"), QStringLiteral("/api/backend/state"));
-        payload.insert(QStringLiteral("backend_load"), QStringLiteral("/api/backend/load"));
-        writeJson(socket, 200, QByteArrayLiteral("OK"), payload);
         return;
     }
 
@@ -245,6 +239,48 @@ void AcpHttpServer::handleRequest(QTcpSocket *socket,
     payload.insert(QStringLiteral("error"), QStringLiteral("Route not found"));
     payload.insert(QStringLiteral("path"), path);
     writeJson(socket, 404, QByteArrayLiteral("Not Found"), payload);
+}
+
+bool AcpHttpServer::tryServeStatic(QTcpSocket *socket, const QString &path)
+{
+    QString resourcePath;
+    if (path == QStringLiteral("/") || path == QStringLiteral("/index.html"))
+        resourcePath = QStringLiteral(":/acp-web/acp_web/index.html");
+    else if (path == QStringLiteral("/styles.css"))
+        resourcePath = QStringLiteral(":/acp-web/acp_web/styles.css");
+    else if (path == QStringLiteral("/app.js"))
+        resourcePath = QStringLiteral(":/acp-web/acp_web/app.js");
+    else
+        return false;
+
+    const QByteArray body = staticContent(resourcePath);
+    if (body.isEmpty())
+    {
+        QJsonObject payload;
+        payload.insert(QStringLiteral("error"), QStringLiteral("Static resource missing"));
+        payload.insert(QStringLiteral("path"), path);
+        writeJson(socket, 500, QByteArrayLiteral("Internal Server Error"), payload);
+        return true;
+    }
+
+    writeResponse(socket, 200, QByteArrayLiteral("OK"), contentTypeForPath(path), body);
+    return true;
+}
+
+QByteArray AcpHttpServer::staticContent(const QString &resourcePath) const
+{
+    QFile file(resourcePath);
+    if (!file.open(QIODevice::ReadOnly)) return QByteArray();
+    return file.readAll();
+}
+
+QByteArray AcpHttpServer::contentTypeForPath(const QString &path) const
+{
+    if (path.endsWith(QStringLiteral(".css")))
+        return QByteArrayLiteral("text/css; charset=utf-8");
+    if (path.endsWith(QStringLiteral(".js")))
+        return QByteArrayLiteral("application/javascript; charset=utf-8");
+    return QByteArrayLiteral("text/html; charset=utf-8");
 }
 
 void AcpHttpServer::proxyModels(QTcpSocket *socket, const QMap<QByteArray, QByteArray> &headers)

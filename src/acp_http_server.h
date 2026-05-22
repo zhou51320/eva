@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QObject>
+#include <QByteArray>
 #include <QJsonObject>
 #include <QMap>
 #include <QTcpServer>
@@ -27,6 +28,9 @@ class AcpHttpServer : public QObject
                        const QString &path,
                        const QMap<QByteArray, QByteArray> &headers,
                        const QByteArray &body);
+    bool tryServeStatic(QTcpSocket *socket, const QString &path);
+    QByteArray staticContent(const QString &resourcePath) const;
+    QByteArray contentTypeForPath(const QString &path) const;
     void proxyModels(QTcpSocket *socket, const QMap<QByteArray, QByteArray> &headers);
     void proxyChatCompletions(QTcpSocket *socket,
                               const QMap<QByteArray, QByteArray> &headers,

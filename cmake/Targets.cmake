@@ -134,6 +134,7 @@ target_include_directories(${EVA_TARGET} PRIVATE
 
 add_executable(
     eva_acp
+    resource/res_acp_web.qrc
     src/acp_main.cpp
     src/acp_runtime.cpp
     src/acp_runtime.h

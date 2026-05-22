@@ -1,0 +1,7 @@
+<RCC>
+    <qresource prefix="/acp-web">
+        <file>acp_web/index.html</file>
+        <file>acp_web/styles.css</file>
+        <file>acp_web/app.js</file>
+    </qresource>
+</RCC>
