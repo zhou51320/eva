@@ -30,6 +30,11 @@ class AcpRuntime : public QObject
     QJsonObject modelsPayload() const;
     QJsonObject backendStatePayload() const;
     bool loadBackend(const QJsonObject &request, QString *errorMessage);
+    bool linkModeEnabled() const;
+    QString modelsEndpoint() const;
+    QString chatCompletionsEndpoint() const;
+    QString configuredApiKey() const;
+    QString configuredApiModel() const;
 
   private slots:
     void onServerOutput(const QString &chunk);

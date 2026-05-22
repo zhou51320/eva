@@ -165,8 +165,8 @@ QJsonObject AcpRuntime::backendStatePayload() const
     payload.insert(QStringLiteral("parallel"), settings_.hid_parallel);
     payload.insert(QStringLiteral("mmproj_path"), settings_.mmprojpath);
     payload.insert(QStringLiteral("lora_path"), settings_.lorapath);
-    payload.insert(QStringLiteral("api_endpoint"), apis_.api_endpoint);
-    payload.insert(QStringLiteral("api_model"), apis_.api_model);
+    payload.insert(QStringLiteral("api_endpoint"), isLinkMode() ? apis_.api_endpoint : QString());
+    payload.insert(QStringLiteral("api_model"), isLinkMode() ? apis_.api_model : QString());
     payload.insert(QStringLiteral("last_error"), lastError_);
     payload.insert(QStringLiteral("last_output_tail"), lastOutput_);
     return payload;
@@ -546,6 +546,41 @@ QString AcpRuntime::currentModelId() const
     const QString canonical = canonicalPath(settings_.modelpath);
     const QString relative = ctx_.modelsDir.isEmpty() ? info.fileName() : QDir(ctx_.modelsDir).relativeFilePath(canonical);
     return relative.isEmpty() ? info.fileName() : relative;
+}
+
+bool AcpRuntime::linkModeEnabled() const
+{
+    return isLinkMode();
+}
+
+QString AcpRuntime::modelsEndpoint() const
+{
+    if (isLinkMode())
+    {
+        const QUrl base = QUrl::fromUserInput(apis_.api_endpoint);
+        return OpenAiCompat::joinPath(base, OpenAiCompat::modelsPath(base)).toString();
+    }
+    return QString();
+}
+
+QString AcpRuntime::chatCompletionsEndpoint() const
+{
+    if (isLinkMode())
+    {
+        const QUrl base = QUrl::fromUserInput(apis_.api_endpoint);
+        return OpenAiCompat::joinPath(base, OpenAiCompat::chatCompletionsPath(base)).toString();
+    }
+    return backendEndpoint() + QStringLiteral("/v1/chat/completions");
+}
+
+QString AcpRuntime::configuredApiKey() const
+{
+    return isLinkMode() ? apis_.api_key : QString();
+}
+
+QString AcpRuntime::configuredApiModel() const
+{
+    return isLinkMode() ? apis_.api_model : QString();
 }
 
 bool AcpRuntime::isLinkMode() const

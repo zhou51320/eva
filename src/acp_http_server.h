@@ -5,6 +5,8 @@
 #include <QMap>
 #include <QTcpServer>
 
+class QNetworkAccessManager;
+class QNetworkReply;
 class QTcpSocket;
 class AcpRuntime;
 
@@ -25,6 +27,11 @@ class AcpHttpServer : public QObject
                        const QString &path,
                        const QMap<QByteArray, QByteArray> &headers,
                        const QByteArray &body);
+    void proxyModels(QTcpSocket *socket, const QMap<QByteArray, QByteArray> &headers);
+    void proxyChatCompletions(QTcpSocket *socket,
+                              const QMap<QByteArray, QByteArray> &headers,
+                              const QByteArray &body);
+    void forwardReply(QTcpSocket *socket, QNetworkReply *reply, bool streaming);
     void writeJson(QTcpSocket *socket, int statusCode, const QByteArray &reason, const QJsonObject &payload);
     void writeText(QTcpSocket *socket, int statusCode, const QByteArray &reason, const QByteArray &body);
     void writeEmpty(QTcpSocket *socket, int statusCode, const QByteArray &reason);
@@ -33,7 +40,9 @@ class AcpHttpServer : public QObject
                        const QByteArray &reason,
                        const QByteArray &contentType,
                        const QByteArray &body);
+    void writeStreamHeaders(QTcpSocket *socket, int statusCode, const QByteArray &reason, const QByteArray &contentType);
 
     AcpRuntime *runtime_ = nullptr;
     QTcpServer server_;
+    QNetworkAccessManager *network_ = nullptr;
 };
