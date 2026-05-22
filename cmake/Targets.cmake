@@ -132,6 +132,41 @@ target_include_directories(${EVA_TARGET} PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/thirdparty/nlohmann)
 
+add_executable(
+    eva_acp
+    src/acp_main.cpp
+    src/acp_runtime.cpp
+    src/acp_runtime.h
+    src/acp_http_server.cpp
+    src/acp_http_server.h
+    src/app/app_bootstrap.cpp
+    src/app/app_bootstrap.h
+    src/app/config_migrator.cpp
+    src/app/config_migrator.h
+    src/app/default_model_finder.cpp
+    src/app/default_model_finder.h
+    src/app/app_context.h
+    src/service/backend/xbackend.cpp
+    src/service/backend/xbackend.h
+    src/service/backend/xbackend_args.cpp
+    src/service/backend/xbackend_args.h
+    src/utils/devicemanager.cpp
+    src/utils/devicemanager.h
+    src/utils/pathutil.cpp
+    src/utils/pathutil.h
+    src/utils/startuplogger.cpp
+    src/utils/startuplogger.h
+    src/utils/flowtracer.cpp
+    src/utils/flowtracer.h)
+
+target_link_libraries(eva_acp PRIVATE Qt5::Core Qt5::Network Qt5::Gui)
+target_compile_features(eva_acp PRIVATE cxx_std_17)
+target_include_directories(eva_acp PRIVATE
+    ${CMAKE_BINARY_DIR}/src/utils
+    ${CMAKE_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/thirdparty/nlohmann)
+
 if (EVA_ENABLE_QT_TTS)
     target_link_libraries(${EVA_TARGET} PRIVATE Qt5::TextToSpeech)
 endif()
@@ -169,10 +204,12 @@ endif()
 if (MINGW)
     if (DEFINED EVA_COMPILE_OPTIONS)
         target_compile_options(${EVA_TARGET} PRIVATE ${EVA_COMPILE_OPTIONS})
+        target_compile_options(eva_acp PRIVATE ${EVA_COMPILE_OPTIONS})
         message(STATUS "EVA_COMPILE_OPTIONS: ${EVA_COMPILE_OPTIONS}")
     endif()
     if (DEFINED EVA_LINK_OPTIONS)
         target_link_options(${EVA_TARGET} PRIVATE ${EVA_LINK_OPTIONS})
+        target_link_options(eva_acp PRIVATE ${EVA_LINK_OPTIONS})
         message(STATUS "EVA_LINK_OPTIONS: ${EVA_LINK_OPTIONS}")
     endif()
 endif()
@@ -181,6 +218,7 @@ endif()
 # This makes `--target eva` also execute the backend copy step.
 if (TARGET backends)
     add_dependencies(${EVA_TARGET} backends)
+    add_dependencies(eva_acp backends)
 endif()
 
 message(STATUS "eva型号: ${eva_OUTPUT_NAME}")

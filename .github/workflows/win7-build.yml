@@ -1,0 +1,62 @@
+name: Build Win7 package
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-win7:
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: msys2 {0}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup MSYS2 MinGW32
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW32
+          update: true
+          install: >-
+            mingw-w64-i686-gcc
+            mingw-w64-i686-cmake
+            mingw-w64-i686-ninja
+            mingw-w64-i686-openssl
+            mingw-w64-i686-qt5-base
+            mingw-w64-i686-qt5-tools
+            mingw-w64-i686-qt5-multimedia
+            mingw-w64-i686-qt5-svg
+            mingw-w64-i686-qt5-speech
+            zip
+
+      - name: Configure CMake
+        run: >-
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_PREFIX_PATH=/mingw32
+          -DOPENSSL_ROOT_DIR=/mingw32
+          -DBODY_PACK=ON
+          -DBODY_SKIP_WINDEPLOYQT=OFF
+          -DBODY_COPY_MINGW_RUNTIME=ON
+          -DEVA_ENABLE_UNIT_TESTS=OFF
+          -DEVA_ENABLE_FUNCTIONAL_TESTS=OFF
+
+      - name: Build Win7 package
+        run: cmake --build build --target eva --parallel
+
+      - name: Package Win7 artifact
+        run: |
+          cd build/bin
+          zip -r ../../eva-win7-build.zip .
+
+      - name: Upload Win7 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: eva-win7-build
+          path: eva-win7-build.zip
