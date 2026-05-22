@@ -12,9 +12,14 @@
       <div class="brand">
         <div class="brand-mark">E</div>
         <div>
-          <div class="brand-title">EVA ACP</div>
-          <div class="brand-subtitle">Local operator console</div>
+          <div class="brand-title">EVA Workspace</div>
+          <div class="brand-subtitle">ACP bridge console</div>
         </div>
+      </div>
+
+      <div class="sidebar-summary">
+        <div class="sidebar-summary-label">当前目标</div>
+        <div class="sidebar-summary-value">通过 EVA 主程序桥接运行</div>
       </div>
 
       <button id="new-chat" class="new-chat">新对话</button>
@@ -45,8 +50,9 @@
     <main class="workspace">
       <header class="topbar">
         <div>
-          <h1 class="headline">ACP 工作台</h1>
-          <p class="headline-sub">按 OpenWebUI 的使用方式组织，但面向 EVA 的本地/远程统一入口。</p>
+          <div class="eyebrow">EVA / ACP / WebUI</div>
+          <h1 class="headline">工作台</h1>
+          <p class="headline-sub">保留 OpenWebUI 的使用习惯，但把模型装载、状态和对话控制统一落在 EVA 运行时上。</p>
         </div>
         <div class="topbar-actions">
           <button id="refresh-all" class="ghost-btn">刷新状态</button>
@@ -74,8 +80,9 @@
           <div class="panel-head">
             <div>
               <div class="panel-title">对话</div>
-              <div class="panel-subtitle">最小可用前端：消息流、当前模型、实时状态。</div>
+              <div class="panel-subtitle">当前会话直接驱动 EVA 主程序。先做文本链路，后续再补附件、知识库、MCP 与工具流。</div>
             </div>
+            <div class="panel-head-meta">Ctrl / Cmd + Enter 发送</div>
           </div>
 
           <div id="message-list" class="message-list"></div>
@@ -93,6 +100,12 @@
         </section>
 
         <aside id="runtime-panel" class="control-panel">
+          <div class="control-panel-head">
+            <div>
+              <div class="panel-title">运行时</div>
+              <div class="panel-subtitle">装载、连接、模型与当前 EVA 状态。</div>
+            </div>
+          </div>
           <section class="control-section">
             <div class="section-title">装载 / 连接</div>
 
