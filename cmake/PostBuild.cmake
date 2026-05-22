@@ -93,9 +93,16 @@ if (WIN32)
     if (BODY_PACK)
         # Deploy Qt runtime beside eva.exe using windeployqt unless explicitly skipped
         if (NOT BODY_SKIP_WINDEPLOYQT)
+            set(_EVA_WINDEPLOYQT "")
             if (EXISTS "${Qt5_BIN_DIR}/windeployqt.exe")
+                set(_EVA_WINDEPLOYQT "${Qt5_BIN_DIR}/windeployqt.exe")
+            elseif (EXISTS "${Qt5_BIN_DIR}/windeployqt-qt5.exe")
+                set(_EVA_WINDEPLOYQT "${Qt5_BIN_DIR}/windeployqt-qt5.exe")
+            endif()
+
+            if (_EVA_WINDEPLOYQT)
                 add_custom_command(TARGET ${EVA_TARGET} POST_BUILD
-                    COMMAND "${Qt5_BIN_DIR}/windeployqt.exe"
+                    COMMAND "${_EVA_WINDEPLOYQT}"
                             --release
                             --no-translations
                             --compiler-runtime
@@ -103,8 +110,9 @@ if (WIN32)
                             "$<TARGET_FILE:${EVA_TARGET}>"
                     COMMENT "windeployqt: bundling Qt runtime into bin"
                 )
+                message(STATUS "Using windeployqt at ${_EVA_WINDEPLOYQT}")
             else()
-                message(WARNING "windeployqt.exe not found under Qt5_BIN_DIR=${Qt5_BIN_DIR}")
+                message(WARNING "windeployqt not found under Qt5_BIN_DIR=${Qt5_BIN_DIR}")
             endif()
         else()
             message(STATUS "BODY_PACK enabled: skipping windeployqt (BODY_SKIP_WINDEPLOYQT=ON)")
