@@ -68,7 +68,7 @@ jobs:
             -DEVA_ENABLE_FUNCTIONAL_TESTS=OFF
 
       - name: Build Win7 package
-        run: cmake --build $env:BUILD_DIR --target eva --config Release --parallel
+        run: cmake --build $env:BUILD_DIR --target eva eva_acp --config Release --parallel
 
       - name: Deploy Qt runtime manually
         run: |
@@ -145,16 +145,24 @@ jobs:
           New-Item -ItemType Directory -Force -Path $packageDir | Out-Null
 
           $binDir = Join-Path $pwd "$env:BUILD_DIR/bin"
-          $builtExe = Get-ChildItem -Path $binDir -Filter 'eva*.exe' | Select-Object -First 1
-          if (-not $builtExe) {
-            throw "Expected built executable not found under: $binDir"
+          $mainExe = Get-ChildItem -Path $binDir -Filter 'eva-*.exe' | Select-Object -First 1
+          if (-not $mainExe) {
+            throw "Expected packaged eva executable not found under: $binDir"
+          }
+          $acpExe = Get-ChildItem -Path $binDir -Filter 'eva_acp*.exe' | Select-Object -First 1
+          if (-not $acpExe) {
+            throw "Expected eva_acp executable not found under: $binDir"
           }
 
           Copy-Item "$binDir\*" $packageDir -Recurse -Force
 
-          $packagedExe = Join-Path $packageDir $builtExe.Name
-          if (-not (Test-Path $packagedExe)) {
-            throw "Packaged executable missing after copy: $packagedExe"
+          $packagedMainExe = Join-Path $packageDir $mainExe.Name
+          if (-not (Test-Path $packagedMainExe)) {
+            throw "Packaged executable missing after copy: $packagedMainExe"
+          }
+          $packagedAcpExe = Join-Path $packageDir $acpExe.Name
+          if (-not (Test-Path $packagedAcpExe)) {
+            throw "Packaged ACP executable missing after copy: $packagedAcpExe"
           }
 
       - name: Validate packaged runtime directories
@@ -168,6 +176,11 @@ jobs:
           $coreDll = Join-Path $packageDir 'Qt5Core.dll'
           if (-not (Test-Path $coreDll)) {
             throw "Qt runtime missing from package: $coreDll"
+          }
+
+          $packagedAcpExe = Get-ChildItem -Path $packageDir -Filter 'eva_acp*.exe' | Select-Object -First 1
+          if (-not $packagedAcpExe) {
+            throw "Packaged ACP executable missing from package root: $packageDir"
           }
 
           $skillsDir = Join-Path $packageDir 'EVA_SKILLS'
