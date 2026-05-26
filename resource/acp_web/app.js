@@ -8,6 +8,14 @@ const state = {
 
 const els = {
   navItems: Array.from(document.querySelectorAll('.nav-item[data-panel]')),
+  auxTabs: Array.from(document.querySelectorAll('.aux-tab[data-aux]')),
+  auxPanes: {
+    overview: document.getElementById('aux-overview'),
+    runtime: document.getElementById('aux-runtime'),
+    models: document.getElementById('aux-models'),
+  },
+  sessionSearch: document.getElementById('session-search'),
+  sessionCount: document.getElementById('session-count'),
   chatPanel: document.getElementById('chat-panel'),
   runtimePanel: document.getElementById('runtime-panel'),
   messageList: document.getElementById('message-list'),
@@ -94,14 +102,17 @@ function getActiveSession() {
 
 function renderSessions() {
   els.sessionList.innerHTML = '';
-  if (state.sessions.length === 0) {
+  const keyword = (els.sessionSearch?.value || '').trim();
+  const visibleSessions = keyword ? state.sessions.filter((session) => (session.title || '').includes(keyword) || (session.messages[0]?.content || '').includes(keyword)) : state.sessions;
+  if (els.sessionCount) els.sessionCount.textContent = String(visibleSessions.length);
+  if (visibleSessions.length === 0) {
     const empty = document.createElement('div');
     empty.className = 'empty-hint';
     empty.textContent = '会话会保存在浏览器本地。';
     els.sessionList.appendChild(empty);
     return;
   }
-  state.sessions.forEach((session) => {
+  visibleSessions.forEach((session) => {
     const item = document.createElement('button');
     item.type = 'button';
     item.className = 'session-chip';
@@ -222,9 +233,16 @@ function switchPanel(panel) {
   els.chatPanel.classList.toggle('hidden', runtime);
   els.runtimePanel.classList.toggle('hidden', !runtime);
   els.navItems.forEach((item) => item.classList.toggle('active', item.dataset.panel === panel));
-  if (runtime) {
-    els.runtimePanel.scrollIntoView({ block: 'start', behavior: 'smooth' });
-  }
+  if (runtime) switchAuxTab('runtime');
+}
+
+function switchAuxTab(name) {
+  Object.entries(els.auxPanes).forEach(([key, pane]) => {
+    if (!pane) return;
+    pane.classList.toggle('hidden', key !== name);
+    pane.classList.toggle('active', key === name);
+  });
+  els.auxTabs.forEach((tab) => tab.classList.toggle('active', tab.dataset.aux === name));
 }
 
 async function fetchJson(url, options) {
@@ -413,6 +431,8 @@ function escapeHtml(value) {
 
 function bindEvents() {
   els.navItems.forEach((item) => item.addEventListener('click', () => switchPanel(item.dataset.panel)));
+  els.auxTabs.forEach((tab) => tab.addEventListener('click', () => switchAuxTab(tab.dataset.aux)));
+  els.sessionSearch?.addEventListener('input', renderSessions);
   els.modeSelect.addEventListener('change', toggleModeFields);
   els.applyLoad.addEventListener('click', applyLoad);
   els.refreshAll.addEventListener('click', refreshAll);
@@ -440,6 +460,7 @@ async function bootstrap() {
   bindEvents();
   toggleModeFields();
   switchPanel('chat');
+  switchAuxTab('overview');
   await refreshAll();
 }
 

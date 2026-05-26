@@ -106,6 +106,7 @@ class ControllerOverlay;
 class SessionController;
 class ToolFlowController;
 class BackendCoordinator;
+class EvaRuntime;
 
 enum class DockerTargetMode
 {
@@ -143,6 +144,7 @@ class Widget : public QWidget
     static constexpr int kDefaultOutputFontPt = 12;
     Widget(QWidget *parent = nullptr, QString applicationDirPath_ = "./");
     ~Widget();
+    void setRuntime(EvaRuntime *runtime);
     QString applicationDirPath;
     // Engineer tool working directory; default to {applicationDirPath}/EVA_WORK
     QString engineerWorkDir;
@@ -1108,6 +1110,7 @@ class Widget : public QWidget
     SessionController *sessionController_ = nullptr;
     ToolFlowController *toolFlowController_ = nullptr;
     BackendCoordinator *backendCoordinator_ = nullptr;
+    EvaRuntime *runtime_ = nullptr; // 不拥有；运行层生命周期由启动入口或服务入口管理
   };
 
 #endif // WIDGET_H

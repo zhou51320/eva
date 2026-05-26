@@ -4,7 +4,7 @@
 
 #include "acp_http_server.h"
 #include "acp_runtime.h"
-#include "app/app_bootstrap.h"
+#include "runtime/runtime_bootstrap.h"
 #include "utils/flowtracer.h"
 #include "utils/startuplogger.h"
 
@@ -12,8 +12,7 @@ int main(int argc, char *argv[])
 {
     StartupLogger::start();
     FlowTracer::log(FlowChannel::Lifecycle, QStringLiteral("acp: enter main"));
-    AppBootstrap::applyEarlyEnv();
-    AppBootstrap::applyLinuxRuntimeEnv();
+    RuntimeBootstrap::applyProcessEnvironment();
 
     QCoreApplication app(argc, argv);
     app.setApplicationName(QStringLiteral("eva_acp"));

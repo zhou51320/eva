@@ -31,6 +31,15 @@ add_executable(
     src/core/session/session_types.h
     src/core/toolflow/tool_flow_controller.cpp
     src/core/toolflow/tool_flow_controller.h
+    src/runtime/eva_runtime.cpp
+    src/runtime/eva_runtime.h
+    src/runtime/runtime_bootstrap.cpp
+    src/runtime/runtime_bootstrap.h
+    src/runtime/runtime_commands.h
+    src/runtime/runtime_events.h
+    src/runtime/runtime_state.h
+    src/runtime/runtime_worker_host.cpp
+    src/runtime/runtime_worker_host.h
     src/service/net/net_client.cpp
     src/service/net/net_client.h
     src/service/net/request_snapshot.h
@@ -113,6 +122,15 @@ set_source_files_properties(
     src/core/toolflow/tool_flow_controller.cpp
     PROPERTIES SKIP_AUTOUIC ON)
 set_source_files_properties(
+    src/runtime/eva_runtime.cpp
+    PROPERTIES SKIP_AUTOUIC ON)
+set_source_files_properties(
+    src/runtime/runtime_bootstrap.cpp
+    PROPERTIES SKIP_AUTOUIC ON)
+set_source_files_properties(
+    src/runtime/runtime_worker_host.cpp
+    PROPERTIES SKIP_AUTOUIC ON)
+set_source_files_properties(
     src/service/backend/backend_coordinator.cpp
     PROPERTIES SKIP_AUTOUIC ON)
 ## Executable name
@@ -149,6 +167,15 @@ add_executable(
     src/app/default_model_finder.cpp
     src/app/default_model_finder.h
     src/app/app_context.h
+    src/runtime/eva_runtime.cpp
+    src/runtime/eva_runtime.h
+    src/runtime/runtime_bootstrap.cpp
+    src/runtime/runtime_bootstrap.h
+    src/runtime/runtime_commands.h
+    src/runtime/runtime_events.h
+    src/runtime/runtime_state.h
+    src/runtime/runtime_worker_host.cpp
+    src/runtime/runtime_worker_host.h
     src/service/backend/xbackend.cpp
     src/service/backend/xbackend.h
     src/service/backend/xbackend_args.cpp
@@ -227,9 +254,6 @@ if (TARGET backends)
 endif()
 
 message(STATUS "eva型号: ${eva_OUTPUT_NAME}")
-
-
-
 
 
 

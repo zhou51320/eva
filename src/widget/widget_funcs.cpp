@@ -2,6 +2,7 @@
 #include "../utils/depresolver.h"
 #include "../utils/processrunner.h"
 #include "../utils/textparse.h"
+#include "runtime/eva_runtime.h"
 #include "terminal_pane.h"
 #include "ui_widget.h"
 #include "widget.h"
@@ -1223,11 +1224,8 @@ void Widget::auto_save_user()
 // ???????????????
 void Widget::emit_send(const ENDPOINT_DATA &data)
 {
-    RequestSnapshot snapshot;
-    snapshot.apis = apis;
-    snapshot.endpoint = data;
-    snapshot.wordsObj = wordsObj;
-    snapshot.languageFlag = language_flag;
-    snapshot.turnId = activeTurnId_;
+    RequestSnapshot snapshot = runtime_
+                                   ? runtime_->buildRequestSnapshot(apis, data, wordsObj, language_flag, activeTurnId_)
+                                   : RequestSnapshot{apis, data, wordsObj, language_flag, activeTurnId_};
     emit ui2net_send(snapshot);
 }

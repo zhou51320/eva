@@ -9,9 +9,9 @@
 #include <QUrl>
 #include <algorithm>
 
-#include "app/app_bootstrap.h"
 #include "app/config_migrator.h"
 #include "app/default_model_finder.h"
+#include "runtime/runtime_bootstrap.h"
 #include "utils/devicemanager.h"
 #include "utils/flowtracer.h"
 #include "utils/openai_compat.h"
@@ -83,9 +83,7 @@ AcpRuntime::AcpRuntime(const LaunchOptions &options, QObject *parent)
 
 bool AcpRuntime::initialize()
 {
-    ctx_ = AppBootstrap::buildContext();
-    AppBootstrap::ensureTempDir(ctx_);
-    AppBootstrap::ensureDefaultConfig(ctx_);
+    ctx_ = RuntimeBootstrap::prepareContext();
     loadConfig();
     refreshBackendProbe();
     applyServerSettings();
@@ -631,6 +629,13 @@ bool AcpRuntime::resetConversation(QString *errorMessage)
 
 QJsonObject AcpRuntime::chatCompletion(const QJsonObject &request, QString *errorMessage)
 {
+    return streamChatCompletion(request, std::function<void(const QString &, const QString &)>(), errorMessage);
+}
+
+QJsonObject AcpRuntime::streamChatCompletion(const QJsonObject &request,
+                                             const std::function<void(const QString &role, const QString &chunk)> &onChunk,
+                                             QString *errorMessage)
+{
     if (bridgeClient_)
     {
         QString text;
@@ -651,7 +656,7 @@ QJsonObject AcpRuntime::chatCompletion(const QJsonObject &request, QString *erro
         }
 
         AcpBridgeClient::ChatResult result;
-        if (!bridgeClient_->sendText(text, &result, errorMessage))
+        if (!bridgeClient_->sendTextStreaming(text, onChunk, &result, errorMessage))
         {
             return QJsonObject();
         }

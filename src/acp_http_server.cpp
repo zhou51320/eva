@@ -3,6 +3,7 @@
 #include "acp_runtime.h"
 
 #include <QCoreApplication>
+#include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -391,44 +392,59 @@ void AcpHttpServer::proxyChatCompletions(QTcpSocket *socket,
     if (runtime_->bridgeModeEnabled())
     {
         QString errorMessage;
-        const QJsonObject response = runtime_->chatCompletion(requestObject, &errorMessage);
-        if (response.isEmpty())
-        {
-            QJsonObject payload;
-            payload.insert(QStringLiteral("error"), errorMessage.isEmpty() ? QStringLiteral("Bridge chat failed.") : errorMessage);
-            writeJson(socket, 502, QByteArrayLiteral("Bad Gateway"), payload);
-            return;
-        }
         if (!streaming)
         {
+            const QJsonObject response = runtime_->chatCompletion(requestObject, &errorMessage);
+            if (response.isEmpty())
+            {
+                QJsonObject payload;
+                payload.insert(QStringLiteral("error"), errorMessage.isEmpty() ? QStringLiteral("Bridge chat failed.") : errorMessage);
+                writeJson(socket, 502, QByteArrayLiteral("Bad Gateway"), payload);
+                return;
+            }
             writeJson(socket, 200, QByteArrayLiteral("OK"), response);
             return;
         }
 
         writeStreamHeaders(socket, 200, QByteArrayLiteral("OK"), QByteArrayLiteral("text/event-stream; charset=utf-8"));
-        const QJsonArray choicesArray = response.value(QStringLiteral("choices")).toArray();
-        const QJsonObject firstChoice = choicesArray.isEmpty() ? QJsonObject() : choicesArray.at(0).toObject();
-        const QJsonObject message = firstChoice.value(QStringLiteral("message")).toObject();
-        QJsonObject delta;
-        delta.insert(QStringLiteral("role"), QStringLiteral("assistant"));
-        delta.insert(QStringLiteral("content"), message.value(QStringLiteral("content")).toString());
-        if (message.contains(QStringLiteral("reasoning")))
-            delta.insert(QStringLiteral("reasoning"), message.value(QStringLiteral("reasoning")).toString());
-        QJsonObject choice;
-        choice.insert(QStringLiteral("index"), 0);
-        choice.insert(QStringLiteral("delta"), delta);
-        choice.insert(QStringLiteral("finish_reason"), QJsonValue());
-        QJsonArray choices;
-        choices.append(choice);
-        QJsonObject chunk;
-        chunk.insert(QStringLiteral("id"), response.value(QStringLiteral("id")).toString());
-        chunk.insert(QStringLiteral("object"), QStringLiteral("chat.completion.chunk"));
-        chunk.insert(QStringLiteral("created"), response.value(QStringLiteral("created")).toInt());
-        chunk.insert(QStringLiteral("model"), response.value(QStringLiteral("model")).toString());
-        chunk.insert(QStringLiteral("choices"), choices);
-        socket->write("data: ");
-        socket->write(QJsonDocument(chunk).toJson(QJsonDocument::Compact));
-        socket->write("\n\n");
+        const QJsonObject response = runtime_->streamChatCompletion(
+            requestObject,
+            [socket](const QString &role, const QString &chunkText)
+            {
+                if (!socket || chunkText.isEmpty()) return;
+                QJsonObject delta;
+                if (role == QStringLiteral("think"))
+                    delta.insert(QStringLiteral("reasoning"), chunkText);
+                else
+                    delta.insert(QStringLiteral("content"), chunkText);
+                QJsonObject choice;
+                choice.insert(QStringLiteral("index"), 0);
+                choice.insert(QStringLiteral("delta"), delta);
+                choice.insert(QStringLiteral("finish_reason"), QJsonValue());
+                QJsonArray choices;
+                choices.append(choice);
+                QJsonObject chunk;
+                chunk.insert(QStringLiteral("id"), QStringLiteral("chatcmpl-bridge"));
+                chunk.insert(QStringLiteral("object"), QStringLiteral("chat.completion.chunk"));
+                chunk.insert(QStringLiteral("created"), static_cast<qint64>(QDateTime::currentSecsSinceEpoch()));
+                chunk.insert(QStringLiteral("model"), QStringLiteral("bridge"));
+                chunk.insert(QStringLiteral("choices"), choices);
+                socket->write("data: ");
+                socket->write(QJsonDocument(chunk).toJson(QJsonDocument::Compact));
+                socket->write("\n\n");
+            },
+            &errorMessage);
+        if (response.isEmpty())
+        {
+            QJsonObject payload;
+            payload.insert(QStringLiteral("error"), errorMessage.isEmpty() ? QStringLiteral("Bridge chat failed.") : errorMessage);
+            socket->write("data: ");
+            socket->write(QJsonDocument(payload).toJson(QJsonDocument::Compact));
+            socket->write("\n\n");
+            socket->write("data: [DONE]\n\n");
+            socket->disconnectFromHost();
+            return;
+        }
         socket->write("data: [DONE]\n\n");
         socket->disconnectFromHost();
         return;

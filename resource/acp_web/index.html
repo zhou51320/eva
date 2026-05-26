@@ -17,16 +17,42 @@
         </div>
       </div>
 
-      <div class="sidebar-summary">
-        <div class="sidebar-summary-label">当前目标</div>
-        <div class="sidebar-summary-value">通过 EVA 主程序桥接运行</div>
+      <div class="workspace-badge">
+        <div class="workspace-badge-top">
+          <span class="workspace-dot"></span>
+          <strong>eva</strong>
+        </div>
+        <span>通过 EVA 主程序桥接运行</span>
       </div>
 
-      <button id="new-chat" class="new-chat">新对话</button>
+      <div class="sidebar-toolbar">
+        <button id="new-chat" class="new-chat compact">＋ 新建</button>
+        <button id="refresh-all" class="ghost-btn compact">刷新</button>
+      </div>
+
+      <div class="sidebar-search-wrap">
+        <input id="session-search" class="sidebar-search" type="text" placeholder="搜索会话…">
+      </div>
+
+      <section class="conversation-shell">
+        <div class="conversation-head">
+          <div>
+            <div class="section-title">会话</div>
+            <div class="section-meta"><span id="session-count">0</span> 条</div>
+          </div>
+          <div class="conversation-actions">
+            <button class="tiny-btn active">全部</button>
+            <button class="tiny-btn" disabled>完成</button>
+          </div>
+        </div>
+
+        <div class="folder-label">ACP</div>
+        <div id="session-list" class="session-list"></div>
+      </section>
 
       <nav class="nav-groups">
         <div class="nav-group">
-          <div class="nav-label">现在可用</div>
+          <div class="nav-label">工作区</div>
           <button class="nav-item active" data-panel="chat">聊天</button>
           <button class="nav-item" data-panel="runtime">运行时</button>
         </div>
@@ -40,40 +66,41 @@
           <button class="nav-item placeholder" disabled>机体控制</button>
         </div>
       </nav>
-
-      <section class="session-block">
-        <div class="section-title">当前会话</div>
-        <div id="session-list" class="session-list"></div>
-      </section>
     </aside>
 
     <main class="workspace">
-      <header class="topbar">
-        <div>
-          <div class="eyebrow">EVA / ACP / WebUI</div>
-          <h1 class="headline">工作台</h1>
-          <p class="headline-sub">保留 OpenWebUI 的使用习惯，但把模型装载、状态和对话控制统一落在 EVA 运行时上。</p>
+      <header class="workspace-header">
+        <div class="workspace-title-row">
+          <div class="eyebrow">EVA / ACP / WEBUI</div>
+          <div class="crumbs">eva <span>/</span> main</div>
         </div>
-        <div class="topbar-actions">
-          <button id="refresh-all" class="ghost-btn">刷新状态</button>
+        <div class="workspace-actions">
           <div id="health-chip" class="health-chip">等待连接</div>
         </div>
       </header>
 
-      <section class="hero-strip">
-        <div class="hero-cell">
-          <span class="hero-label">模式</span>
-          <strong id="hero-mode">-</strong>
+      <div class="context-strip">
+        <div class="context-left">
+          <div class="headline-block">
+            <h1 class="headline">会话工作台</h1>
+            <p class="headline-sub">统一查看当前会话、模型与运行时状态，并通过 EVA 主程序桥接执行实际装载与对话。</p>
+          </div>
+          <section class="hero-strip">
+            <div class="hero-cell">
+              <span class="hero-label">模式</span>
+              <strong id="hero-mode">-</strong>
+            </div>
+            <div class="hero-cell">
+              <span class="hero-label">当前模型</span>
+              <strong id="hero-model">-</strong>
+            </div>
+            <div class="hero-cell wide">
+              <span class="hero-label">目标端点</span>
+              <strong id="hero-endpoint">-</strong>
+            </div>
+          </section>
         </div>
-        <div class="hero-cell">
-          <span class="hero-label">当前模型</span>
-          <strong id="hero-model">-</strong>
-        </div>
-        <div class="hero-cell wide">
-          <span class="hero-label">目标端点</span>
-          <strong id="hero-endpoint">-</strong>
-        </div>
-      </section>
+      </div>
 
       <div class="main-grid">
         <section id="chat-panel" class="chat-panel">
@@ -87,97 +114,117 @@
 
           <div id="message-list" class="message-list"></div>
 
-          <div class="composer">
-            <textarea id="chat-input" class="chat-input" rows="4" placeholder="输入消息。首版只覆盖纯文本对话，后续再接图片、文档、音频与工具面板。"></textarea>
-            <div class="composer-actions">
-              <label class="stream-toggle">
-                <input id="stream-toggle" type="checkbox" checked>
-                <span>流式输出</span>
-              </label>
-              <button id="send-chat" class="primary-btn">发送</button>
+          <div class="composer-shell">
+            <div class="composer-tools">
+              <button class="tiny-btn" disabled>附件</button>
+              <button class="tiny-btn" disabled>问题库</button>
+              <button class="tiny-btn" disabled>工具面板</button>
+            </div>
+            <div class="composer">
+              <textarea id="chat-input" class="chat-input" rows="4" placeholder="输入消息。首版先覆盖文本对话，后续再接图片、文档、音频与工具面板。"></textarea>
+              <div class="composer-actions">
+                <label class="stream-toggle">
+                  <input id="stream-toggle" type="checkbox" checked>
+                  <span>流式输出</span>
+                </label>
+                <button id="send-chat" class="primary-btn">发送</button>
+              </div>
             </div>
           </div>
         </section>
 
-        <aside id="runtime-panel" class="control-panel">
-          <div class="control-panel-head">
+        <aside id="runtime-panel" class="aux-panel">
+          <div class="aux-head">
             <div>
-              <div class="panel-title">运行时</div>
-              <div class="panel-subtitle">装载、连接、模型与当前 EVA 状态。</div>
+              <div class="panel-title">辅助面板</div>
+              <div class="panel-subtitle">接近 codeg 的右侧工作区：状态、装载与模型。</div>
             </div>
           </div>
-          <section class="control-section">
-            <div class="section-title">装载 / 连接</div>
 
-            <label class="field">
-              <span>模式</span>
-              <select id="mode-select">
-                <option value="local">本地</option>
-                <option value="link">链接</option>
-              </select>
-            </label>
+          <div class="aux-tabs">
+            <button class="aux-tab active" data-aux="overview">概览</button>
+            <button class="aux-tab" data-aux="runtime">运行时</button>
+            <button class="aux-tab" data-aux="models">模型</button>
+          </div>
 
-            <div id="local-fields" class="stack-fields">
+          <div id="aux-overview" class="aux-pane active">
+            <section class="control-section compact-section">
+              <div class="section-title">状态概览</div>
+              <div id="state-grid" class="state-grid"></div>
+            </section>
+          </div>
+
+          <div id="aux-runtime" class="aux-pane hidden">
+            <section class="control-section compact-section">
+              <div class="section-title">装载 / 连接</div>
+
               <label class="field">
-                <span>本地模型</span>
-                <select id="local-model-select"></select>
-              </label>
-              <label class="field">
-                <span>后端</span>
-                <select id="backend-select">
-                  <option value="auto">auto</option>
-                  <option value="cpu">cpu</option>
-                  <option value="cpu-noavx">cpu-noavx</option>
-                  <option value="cuda">cuda</option>
-                  <option value="vulkan">vulkan</option>
-                  <option value="opencl">opencl</option>
+                <span>模式</span>
+                <select id="mode-select">
+                  <option value="local">本地</option>
+                  <option value="link">链接</option>
                 </select>
               </label>
-            </div>
 
-            <div id="link-fields" class="stack-fields hidden">
-              <label class="field">
-                <span>端点</span>
-                <input id="endpoint-input" type="text" placeholder="https://example.com/v1">
-              </label>
-              <label class="field">
-                <span>密钥</span>
-                <input id="apikey-input" type="password" placeholder="sk-...">
-              </label>
-              <label class="field">
-                <span>模型</span>
-                <input id="remote-model-input" type="text" placeholder="gpt-4o-mini / qwen / custom-model">
-              </label>
-            </div>
+              <div id="local-fields" class="stack-fields">
+                <label class="field">
+                  <span>本地模型</span>
+                  <select id="local-model-select"></select>
+                </label>
+                <label class="field">
+                  <span>后端</span>
+                  <select id="backend-select">
+                    <option value="auto">auto</option>
+                    <option value="cpu">cpu</option>
+                    <option value="cpu-noavx">cpu-noavx</option>
+                    <option value="cuda">cuda</option>
+                    <option value="vulkan">vulkan</option>
+                    <option value="opencl">opencl</option>
+                  </select>
+                </label>
+              </div>
 
-            <div class="inline-grid">
-              <label class="field compact">
-                <span>端口</span>
-                <input id="port-input" type="text" placeholder="8080">
-              </label>
-              <label class="field compact">
-                <span>线程</span>
-                <input id="nthread-input" type="number" min="1" step="1" placeholder="自动">
-              </label>
-              <label class="field compact">
-                <span>上下文</span>
-                <input id="nctx-input" type="number" min="1" step="1" placeholder="4096">
-              </label>
-            </div>
+              <div id="link-fields" class="stack-fields hidden">
+                <label class="field">
+                  <span>端点</span>
+                  <input id="endpoint-input" type="text" placeholder="https://example.com/v1">
+                </label>
+                <label class="field">
+                  <span>密钥</span>
+                  <input id="apikey-input" type="password" placeholder="sk-...">
+                </label>
+                <label class="field">
+                  <span>模型</span>
+                  <input id="remote-model-input" type="text" placeholder="gpt-4o-mini / qwen / custom-model">
+                </label>
+              </div>
 
-            <button id="apply-load" class="primary-btn full">应用并装载</button>
-            <div id="load-feedback" class="feedback-line"></div>
-          </section>
+              <div class="inline-grid">
+                <label class="field compact">
+                  <span>端口</span>
+                  <input id="port-input" type="text" placeholder="8080">
+                </label>
+                <label class="field compact">
+                  <span>线程</span>
+                  <input id="nthread-input" type="number" min="1" step="1" placeholder="自动">
+                </label>
+                <label class="field compact">
+                  <span>上下文</span>
+                  <input id="nctx-input" type="number" min="1" step="1" placeholder="4096">
+                </label>
+              </div>
 
-          <section class="control-section">
-            <div class="section-title">模型与状态</div>
-            <div id="state-grid" class="state-grid"></div>
-          </section>
+              <button id="apply-load" class="primary-btn full">应用并装载</button>
+              <div id="load-feedback" class="feedback-line"></div>
+            </section>
+          </div>
 
-          <section class="control-section">
-            <div class="section-title">模型列表</div>
-            <div id="models-list" class="models-list"></div>
-          </section>
+          <div id="aux-models" class="aux-pane hidden">
+            <section class="control-section compact-section">
+              <div class="section-title">模型列表</div>
+              <div id="models-list" class="models-list"></div>
+            </section>
+          </div>
         </aside>
       </div>
     </main>

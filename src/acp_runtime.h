@@ -3,6 +3,7 @@
 #include <QObject>
 #include <QJsonObject>
 #include <QString>
+#include <functional>
 
 #include "acp_bridge_client.h"
 #include "app/app_context.h"
@@ -39,6 +40,9 @@ class AcpRuntime : public QObject
     QString configuredApiModel() const;
     bool resetConversation(QString *errorMessage);
     QJsonObject chatCompletion(const QJsonObject &request, QString *errorMessage);
+    QJsonObject streamChatCompletion(const QJsonObject &request,
+                                     const std::function<void(const QString &role, const QString &chunk)> &onChunk,
+                                     QString *errorMessage);
 
   private slots:
     void onServerOutput(const QString &chunk);

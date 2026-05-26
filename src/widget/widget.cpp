@@ -429,6 +429,11 @@ Widget::Widget(QWidget *parent, QString applicationDirPath_)
     qDebug() << "widget init over";
 }
 
+void Widget::setRuntime(EvaRuntime *runtime)
+{
+    runtime_ = runtime;
+}
+
 Widget::~Widget()
 {
     // 退出阶段务必先处理“可能在析构/断开时 emit 信号”的对象。

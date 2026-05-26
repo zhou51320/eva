@@ -43,6 +43,8 @@ Q_IMPORT_PLUGIN(QFcitxPlatformInputContextPlugin)
 #include "widget/widget.h"
 #include "xmcp.h"
 #include "prompt.h"
+#include "runtime/eva_runtime.h"
+#include "runtime/runtime_bootstrap.h"
 #include "service/net/net_client.h"
 #include "service/tools/tool_executor.h"
 
@@ -53,10 +55,8 @@ int main(int argc, char *argv[])
     FlowTracer::log(FlowChannel::Lifecycle, QStringLiteral("startup: enter main"));
     StartupLogger::log(QStringLiteral("进入 main"));
     // 兼容老旧 CPU：禁用 Qt PCRE2 JIT，优先排查 Win7 SIGILL/illegal instruction 问题
-    AppBootstrap::applyEarlyEnv();
+    RuntimeBootstrap::applyProcessEnvironment();
     FlowTracer::log(FlowChannel::Lifecycle, QStringLiteral("compat: QT_DISABLE_REGEXP_JIT=1"));
-    // 平台运行环境变量（Linux 静态构建 / AppImage）
-    AppBootstrap::applyLinuxRuntimeEnv();
 
     QCoreApplication::setAttribute(Qt::AA_EnableHighDpiScaling, true);                                       // 自适应缩放
     QGuiApplication::setHighDpiScaleFactorRoundingPolicy(Qt::HighDpiScaleFactorRoundingPolicy::PassThrough); // 适配非整数倍缩放
@@ -86,7 +86,9 @@ int main(int argc, char *argv[])
         // qDebug() << "Loaded font:" << customFont.family();
     }
     promptx::loadPromptLibrary();
-    const AppContext appCtx = AppBootstrap::buildContext();
+    RuntimeBootstrap::Options runtimeOptions;
+    runtimeOptions.ensureDefaultConfig = false;
+    const AppContext appCtx = RuntimeBootstrap::prepareContext(runtimeOptions);
     const QString applicationDirPath = appCtx.appDir;
     const QString appPath = appCtx.appPath;
     const QString tempDir = appCtx.tempDir;
@@ -140,10 +142,19 @@ int main(int argc, char *argv[])
     AppBootstrap::ensureDefaultConfig(appCtx);
     StartupLogger::log(QStringLiteral("默认模型自动发现完成"));
     FlowTracer::log(FlowChannel::Lifecycle, QStringLiteral("startup: default model discovery finished"));
+    EvaRuntime runtime;
+    QString runtimeError;
+    if (!runtime.initialize(appCtx, &runtimeError))
+    {
+        qCritical().noquote() << QStringLiteral("Failed to initialize EVA runtime:") << runtimeError;
+        return 3;
+    }
+    QObject::connect(&a, &QCoreApplication::aboutToQuit, &runtime, &EvaRuntime::shutdown);
     //------------------实例化主要节点------------------
     QElapsedTimer widgetTimer;
     widgetTimer.start();
     Widget w(nullptr, applicationDirPath);      // 窗口实例
+    w.setRuntime(&runtime);
     StartupLogger::log(QStringLiteral("Widget 构造完成（%1 ms）").arg(widgetTimer.elapsed()));
     FlowTracer::log(FlowChannel::Lifecycle, QStringLiteral("construct: Widget %1 ms").arg(widgetTimer.elapsed()));
     QElapsedTimer expendTimer;

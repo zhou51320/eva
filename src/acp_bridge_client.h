@@ -5,6 +5,7 @@
 #include <QJsonObject>
 #include <QObject>
 #include <QString>
+#include <functional>
 
 #include "net/controlchannel.h"
 
@@ -28,6 +29,11 @@ class AcpBridgeClient : public QObject
     QJsonObject applyLoad(const QJsonObject &payload, QString *errorMessage, int timeoutMs = 3000);
     bool resetConversation(QString *errorMessage, int timeoutMs = 3000);
     bool sendText(const QString &text, ChatResult *result, QString *errorMessage, int timeoutMs = 600000);
+    bool sendTextStreaming(const QString &text,
+                           const std::function<void(const QString &role, const QString &chunk)> &onChunk,
+                           ChatResult *result,
+                           QString *errorMessage,
+                           int timeoutMs = 600000);
 
   private:
     QJsonObject request(const QString &name, const QJsonObject &payload, QString *errorMessage, int timeoutMs);

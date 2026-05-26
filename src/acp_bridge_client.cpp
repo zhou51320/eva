@@ -120,6 +120,15 @@ bool AcpBridgeClient::resetConversation(QString *errorMessage, int timeoutMs)
 
 bool AcpBridgeClient::sendText(const QString &text, ChatResult *result, QString *errorMessage, int timeoutMs)
 {
+    return sendTextStreaming(text, std::function<void(const QString &, const QString &)>(), result, errorMessage, timeoutMs);
+}
+
+bool AcpBridgeClient::sendTextStreaming(const QString &text,
+                                       const std::function<void(const QString &role, const QString &chunk)> &onChunk,
+                                       ChatResult *result,
+                                       QString *errorMessage,
+                                       int timeoutMs)
+{
     if (!result)
     {
         if (errorMessage) *errorMessage = QStringLiteral("Chat result receiver is required.");
@@ -138,6 +147,19 @@ bool AcpBridgeClient::sendText(const QString &text, ChatResult *result, QString 
     lastError_.clear();
     chatWaiting_ = true;
 
+    QMetaObject::Connection chunkConn;
+    if (onChunk)
+    {
+        chunkConn = connect(channel_, &ControlChannel::controllerEventArrived, this, [this, onChunk](const QJsonObject &payload)
+        {
+            if (!chatWaiting_) return;
+            if (payload.value(QStringLiteral("type")).toString() != QStringLiteral("output")) return;
+            const QString role = payload.value(QStringLiteral("role")).toString();
+            const QString textChunk = payload.value(QStringLiteral("text")).toString();
+            if (!textChunk.isEmpty()) onChunk(role, textChunk);
+        });
+    }
+
     QEventLoop loop;
     QTimer timer;
     timer.setSingleShot(true);
@@ -147,6 +169,7 @@ bool AcpBridgeClient::sendText(const QString &text, ChatResult *result, QString 
     loop.exec();
     chatLoop_ = nullptr;
     chatWaiting_ = false;
+    if (chunkConn) disconnect(chunkConn);
 
     QString bridgeError;
     const QJsonObject state = getState(&bridgeError, 1500);
