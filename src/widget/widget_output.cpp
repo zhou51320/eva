@@ -656,7 +656,7 @@ void Widget::processStreamChunk(const QString &chunk, const QColor &color)
     // 1) 不能插入新的“模型/think”角色头与分隔线，否则会破坏文本连续性；
     // 2) <think>...</think> 属于推理过程，补完模式下不应污染续写文本，直接忽略显示；
     // 3) 仍然把原始 chunk 追加到 temp_assistant_history，保证收尾阶段能正确提取最终文本与推理。
-    if (ui_state == COMPLETE_STATE)
+    if (runtimeConversationModeForUi() == ConversationMode::Complete)
     {
         const QString begin = QString(DEFAULT_THINK_BEGIN);
         const QString tend = QString(DEFAULT_THINK_END);

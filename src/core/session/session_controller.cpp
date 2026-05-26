@@ -1,7 +1,5 @@
 ﻿#include "core/session/session_controller.h"
 
-#include "widget/widget.h"
-#include "ui_widget.h"
 #include "prompt_builder.h"
 #include "utils/flowtracer.h"
 
@@ -13,6 +11,7 @@
 #include <QFileInfo>
 #include <QImage>
 #include <QImageReader>
+#include <QtGlobal>
 
 namespace
 {
@@ -37,50 +36,183 @@ QString joinAttachmentNames(const QStringList &paths, int maxCount)
 }
 }
 
-SessionController::SessionController(Widget *owner)
-    : QObject(owner), w_(owner)
+SessionController::SessionController(QObject *owner)
+    : QObject(owner), host_(dynamic_cast<SessionHostPort *>(owner))
 {
+}
+
+SessionHostPort *SessionController::hostPort() const
+{
+    return host_;
+}
+
+SessionFrontendPort *SessionController::frontendPort() const
+{
+    return host_;
+}
+
+RuntimeState SessionController::runtimeState() const
+{
+    const SessionHostPort *host = hostPort();
+    if (host && host->runtimeStateSnapshotForSession().initialized)
+        return host->runtimeStateSnapshotForSession();
+    return RuntimeState();
+}
+
+SessionController::PendingToolState SessionController::pendingToolState() const
+{
+    PendingToolState tool;
+    SessionHostPort *host = hostPort();
+    const RuntimeState state = runtimeState();
+    if (state.initialized)
+    {
+        tool.result = state.pendingToolResult;
+        tool.pendingName = state.pendingToolName;
+        tool.callId = state.pendingToolCallId;
+        tool.lastName = state.lastToolCallName;
+    }
+    if (host)
+    {
+        if (tool.result.isEmpty()) tool.result = host->pendingToolResult();
+        if (tool.pendingName.isEmpty()) tool.pendingName = host->pendingToolName();
+        if (tool.callId.isEmpty()) tool.callId = host->pendingToolCallId();
+        if (tool.lastName.isEmpty()) tool.lastName = host->lastToolCallName();
+    }
+    return tool;
+}
+
+void SessionController::clearPendingToolResult()
+{
+    if (SessionHostPort *host = hostPort())
+        host->clearPendingToolResult();
+    syncRuntimeSessionState();
+}
+
+COMPACTION_SETTINGS SessionController::compactionSettings() const
+{
+    SessionHostPort *host = hostPort();
+    const RuntimeState state = runtimeState();
+    if (state.initialized)
+        return state.compactionSettings;
+    return host ? host->sessionCompactionSettings() : COMPACTION_SETTINGS();
+}
+
+QJsonArray SessionController::sessionMessages() const
+{
+    SessionHostPort *host = hostPort();
+    if (!host)
+        return QJsonArray();
+    const RuntimeState state = runtimeState();
+    if (state.initialized)
+    {
+        const QJsonArray runtimeMessages = state.messages;
+        if (!runtimeMessages.isEmpty() || host->legacySessionMessages().isEmpty())
+            return runtimeMessages;
+    }
+    return host->legacySessionMessages();
+}
+
+int SessionController::appendConversationMessage(const QJsonObject &message, bool persistHistory)
+{
+    SessionHostPort *host = hostPort();
+    if (!host)
+        return -1;
+
+    const int index = host->appendRuntimeSessionMessage(message);
+
+    if (persistHistory)
+        host->appendHistoryMessage(message);
+    syncRuntimeSessionState();
+    return index;
+}
+
+void SessionController::replaceConversationMessages(const QJsonArray &messages, bool rewriteHistory)
+{
+    SessionHostPort *host = hostPort();
+    if (!host)
+        return;
+    host->setLegacySessionMessages(messages);
+    if (host->runtimeSessionReady())
+        host->syncSessionRuntimeState(true);
+    if (rewriteHistory)
+        host->rewriteHistoryMessages(messages);
+    syncRuntimeSessionState();
+}
+
+void SessionController::replaceConversationMessage(int index, const QJsonObject &message)
+{
+    SessionHostPort *host = hostPort();
+    if (!host)
+        return;
+    QJsonArray messages = sessionMessages();
+    if (index < 0 || index >= messages.size())
+        return;
+    messages.replace(index, message);
+    if (host->runtimeSessionReady())
+    {
+        if (!host->replaceRuntimeSessionMessage(index, message))
+            host->setLegacySessionMessages(messages);
+    }
+    else
+    {
+        host->setLegacySessionMessages(messages);
+    }
+    syncRuntimeSessionState();
+}
+
+void SessionController::syncRuntimeSessionState() const
+{
+    if (SessionHostPort *host = hostPort())
+        host->syncSessionRuntimeState(true);
 }
 
 ENDPOINT_DATA SessionController::prepareEndpointData()
 {
+    const RuntimeState state = runtimeState();
+    const bool hasRuntime = state.initialized;
+    SessionHostPort *host = hostPort();
+    const SETTINGS settings = hasRuntime ? state.settings : (host ? host->sessionSettingsSnapshot() : SETTINGS());
     ENDPOINT_DATA d;
-    d.date_prompt = w_->ui_DATES.date_prompt;
-    d.stopwords = w_->ui_DATES.extra_stop_words;
-    d.is_complete_state = (w_->ui_state == COMPLETE_STATE);
-    d.temp = w_->ui_SETTINGS.temp;
-    d.repeat = w_->ui_SETTINGS.repeat;
-    d.top_k = w_->ui_SETTINGS.top_k;
-    d.top_p = w_->ui_SETTINGS.hid_top_p;
-    d.n_predict = w_->ui_SETTINGS.hid_npredict;
-    d.reasoning_effort = sanitizeReasoningEffort(w_->ui_SETTINGS.reasoning_effort);
-    d.messagesArray = w_->ui_messagesArray;
-    d.tool_call_mode = w_->ui_tool_call_mode;
-    d.tools = (w_->ui_tool_call_mode == TOOL_CALL_FUNCTION) ? w_->buildFunctionTools() : QJsonArray();
-    d.id_slot = w_->currentSlotId_;
-    d.turn_id = w_->activeTurnId_;
+    d.date_prompt = hasRuntime ? state.systemPrompt : (host ? host->sessionSystemPrompt() : QString());
+    d.stopwords = hasRuntime ? state.stopwords : (host ? host->sessionStopwords() : QStringList());
+    d.is_complete_state = hasRuntime ? (state.conversationMode == ConversationMode::Complete)
+                                     : (host && host->sessionConversationMode() == ConversationMode::Complete);
+    d.temp = settings.temp;
+    d.repeat = settings.repeat;
+    d.top_k = settings.top_k;
+    d.top_p = settings.hid_top_p;
+    d.n_predict = settings.hid_npredict;
+    d.reasoning_effort = sanitizeReasoningEffort(settings.reasoning_effort);
+    d.messagesArray = sessionMessages();
+    d.tool_call_mode = hasRuntime ? state.toolCallMode : (host ? host->sessionToolCallMode() : DEFAULT_TOOL_CALL_MODE);
+    d.tools = (d.tool_call_mode == TOOL_CALL_FUNCTION && host) ? host->sessionFunctionTools() : QJsonArray();
+    d.id_slot = hasRuntime ? state.slotId : (host ? host->sessionSlotId() : -1);
+    d.turn_id = hasRuntime ? state.activeTurnId : (host ? host->sessionActiveTurnId() : 0);
     return d;
 }
 
 void SessionController::beginSessionIfNeeded()
 {
-    if (!(w_->history_ && w_->ui_state == CHAT_STATE && w_->history_->sessionId().isEmpty()))
+    SessionHostPort *host = hostPort();
+    if (!host || !host->shouldBeginHistorySession())
         return;
     SessionMeta meta;
     meta.id = QString::number(QDateTime::currentMSecsSinceEpoch());
     meta.title = "";
-    meta.endpoint = (w_->ui_mode == LINK_MODE) ? (w_->apis.api_endpoint + ((w_->ui_state == CHAT_STATE) ? w_->apis.api_chat_endpoint : w_->apis.api_completion_endpoint))
-                                               : w_->formatLocalEndpoint(w_->activeServerHost_, w_->activeServerPort_);
-    meta.model = (w_->ui_mode == LINK_MODE) ? w_->apis.api_model : w_->ui_SETTINGS.modelpath;
-    meta.system = w_->ui_DATES.date_prompt;
-    meta.n_ctx = w_->ui_SETTINGS.nctx;
-    meta.slot_id = w_->currentSlotId_;
+    const RuntimeState state = runtimeState();
+    const bool hasRuntime = state.initialized;
+    meta.endpoint = hasRuntime && !state.endpoint.isEmpty() ? state.endpoint : host->sessionEndpointForHistory();
+    meta.model = hasRuntime && !state.currentModel.isEmpty() ? state.currentModel : host->sessionModelForHistory();
+    meta.system = hasRuntime ? state.systemPrompt : host->sessionSystemPrompt();
+    meta.n_ctx = hasRuntime ? state.settings.nctx : host->sessionContextSize();
+    meta.slot_id = hasRuntime ? state.slotId : host->sessionSlotId();
     meta.startedAt = QDateTime::currentDateTime();
-    w_->history_->begin(meta);
+    host->beginHistorySession(meta);
     QJsonObject systemMessage;
     systemMessage.insert("role", DEFAULT_SYSTEM_NAME);
-    systemMessage.insert("content", w_->ui_DATES.date_prompt);
-    w_->history_->appendMessage(systemMessage);
+    systemMessage.insert("content", meta.system);
+    host->appendHistoryMessage(systemMessage);
+    syncRuntimeSessionState();
 }
 
 bool SessionController::buildDocumentAttachment(const QString &path, DocumentAttachment &attachment)
@@ -90,18 +222,21 @@ bool SessionController::buildDocumentAttachment(const QString &path, DocumentAtt
     const QByteArray encoded = QFile::encodeName(absolutePath);
     if (encoded.isEmpty())
     {
-        w_->reflash_state(QStringLiteral("ui:invalid document path -> ") + absolutePath, WRONG_SIGNAL);
+        if (SessionFrontendPort *frontend = frontendPort())
+            frontend->showSessionWarning(QStringLiteral("ui:invalid document path -> ") + absolutePath, WRONG_SIGNAL);
         return false;
     }
     const std::string pathStr(encoded.constData(), static_cast<size_t>(encoded.size()));
     const doc2md::ConversionResult result = doc2md::convertFile(pathStr);
     for (const std::string &warn : result.warnings)
     {
-        w_->reflash_state(QStringLiteral("[doc2md] %1").arg(QString::fromStdString(warn)), USUAL_SIGNAL);
+        if (SessionFrontendPort *frontend = frontendPort())
+            frontend->showSessionWarning(QStringLiteral("[doc2md] %1").arg(QString::fromStdString(warn)), USUAL_SIGNAL);
     }
     if (!result.success)
     {
-        w_->reflash_state(QStringLiteral("ui:doc parse failed -> ") + absolutePath, WRONG_SIGNAL);
+        if (SessionFrontendPort *frontend = frontendPort())
+            frontend->showSessionWarning(QStringLiteral("ui:doc parse failed -> ") + absolutePath, WRONG_SIGNAL);
         return false;
     }
     attachment.path = absolutePath;
@@ -142,19 +277,17 @@ QString SessionController::describeDocumentList(const QVector<DocumentAttachment
 
 void SessionController::collectUserInputs(InputPack &pack, bool attachControllerFrame)
 {
-    auto *ui = w_->ui;
+    SessionFrontendPort *frontend = frontendPort();
+    if (!frontend)
+        return;
     pack.text.clear();
     // Only collect user text when we are NOT in a tool loop. The current task
     // is already logged by on_send_clicked(); do not log here to avoid
     // duplicate/misleading "current task" lines.
-    if (w_->tool_result.isEmpty())
-    {
-        pack.text = ui->input->textEdit->toPlainText().toUtf8().data();
-        ui->input->textEdit->clear();
-    }
-    pack.images = ui->input->imageFilePaths();
+    pack.text = frontend->takeDraftText(!pendingToolState().hasResult());
+    pack.images = frontend->draftImageFilePaths();
     pack.documents.clear();
-    const QStringList documentPaths = ui->input->documentFilePaths();
+    const QStringList documentPaths = frontend->draftDocumentFilePaths();
     if (!documentPaths.isEmpty())
     {
         pack.documents.reserve(documentPaths.size());
@@ -167,25 +300,28 @@ void SessionController::collectUserInputs(InputPack &pack, bool attachController
             }
         }
     }
-    if (attachControllerFrame && w_->ui_controller_ischecked)
+    if (attachControllerFrame && frontend->shouldAttachControllerFrame())
     {
         // 桌面控制器开启时：为模型附带最新截屏（仅原图，不再附带坐标叠加图）
-        const Widget::ControllerFrame frame = w_->captureControllerFrame();
-        if (!frame.imagePath.isEmpty())
+        const QString imagePath = frontend->captureControllerFrameImagePath();
+        if (!imagePath.isEmpty())
         {
             // 记录“最后一次发给模型的控制器截图”，用于后续将 bbox 等信息叠加后落盘（EVA_TEMP/overlay）
-            w_->lastControllerImagePathForModel_ = frame.imagePath;
-            pack.images.append(frame.imagePath);
+            frontend->rememberControllerFrameForModel(imagePath);
+            pack.images.append(imagePath);
         }
     }
-    pack.wavs = ui->input->wavFilePaths();
-    ui->input->clearThumbnails();
+    pack.wavs = frontend->draftAudioFilePaths();
+    frontend->clearDraftAttachments();
 }
 
 void SessionController::handleChatReply(ENDPOINT_DATA &data, const InputPack &in)
 {
-    w_->markBackendActivity();
-    w_->cancelLazyUnload(QStringLiteral("handle chat reply"));
+    SessionHostPort *host = hostPort();
+    if (!host)
+        return;
+    host->noteBackendActivity();
+    host->cancelSessionLazyUnload(QStringLiteral("handle chat reply"));
 
     // 记录本轮用户输入对应的第一条消息索引，便于记录条锚点定位
     int firstUserMsgIndex = -1;
@@ -198,7 +334,7 @@ void SessionController::handleChatReply(ENDPOINT_DATA &data, const InputPack &in
     QStringList attachmentLines;
     if (!in.documents.isEmpty())
     {
-        QString docLabel = w_->describeDocumentList(in.documents);
+        QString docLabel = describeDocumentList(in.documents);
         if (docLabel.isEmpty()) docLabel = QString::number(in.documents.size());
         attachmentLines.append(QStringLiteral("[DOC] ") + docLabel);
     }
@@ -227,10 +363,7 @@ void SessionController::handleChatReply(ENDPOINT_DATA &data, const InputPack &in
         QJsonObject roleMessage;
         roleMessage.insert("role", DEFAULT_USER_NAME);
         roleMessage.insert("content", in.text);
-        w_->ui_messagesArray.append(roleMessage);
-        markUserIndex(w_->ui_messagesArray.size() - 1);
-        if (w_->history_)
-            w_->history_->appendMessage(roleMessage);
+        markUserIndex(appendConversationMessage(roleMessage));
     }
     else
     {
@@ -299,10 +432,7 @@ void SessionController::handleChatReply(ENDPOINT_DATA &data, const InputPack &in
             }
         }
         message["content"] = contentArray;
-        w_->ui_messagesArray.append(message);
-        markUserIndex(w_->ui_messagesArray.size() - 1);
-        if (w_->history_)
-            w_->history_->appendMessage(message);
+        markUserIndex(appendConversationMessage(message));
     }
     if (!in.wavs.isEmpty())
     {
@@ -338,118 +468,92 @@ void SessionController::handleChatReply(ENDPOINT_DATA &data, const InputPack &in
             contentArray.append(audioObject);
         }
         message["content"] = contentArray;
-        w_->ui_messagesArray.append(message);
-        markUserIndex(w_->ui_messagesArray.size() - 1);
-        if (w_->history_)
-            w_->history_->appendMessage(message);
+        markUserIndex(appendConversationMessage(message));
     }
 
-    // 输出区：显示用户输入（包含附件摘要），避免只看到模型输出
-    if (!displayText.isEmpty() && !w_->engineerProxyRuntime_.active)
-    {
-        w_->flushPendingStream();
-        const int recIdx = w_->recordCreate(Widget::RecordRole::User);
-        w_->appendRoleHeader(QStringLiteral("user"));
-        w_->reflash_output(displayText, false, w_->textColorForRole(Widget::RecordRole::User));
-        w_->recordAppendText(recIdx, displayText);
-        if (firstUserMsgIndex >= 0 && firstUserMsgIndex < w_->ui_messagesArray.size())
-        {
-            w_->recordEntries_[recIdx].msgIndex = firstUserMsgIndex;
-        }
-    }
-
-    if (!w_->tool_result.isEmpty())
+    // 输出区：显示用户输入（包含附件摘要），避免只看到模型输出。
+    if (SessionFrontendPort *frontend = frontendPort())
+        frontend->presentUserMessageRecord(displayText, firstUserMsgIndex);
+    const PendingToolState tool = pendingToolState();
+    if (tool.hasResult())
     {
         QJsonObject toolMessage;
         toolMessage["role"] = QStringLiteral("tool");
-        toolMessage["content"] = w_->tool_result;
-        toolMessage["tool"] = w_->lastToolPendingName_;
-        if (!w_->pendingToolCallId_.isEmpty())
+        toolMessage["content"] = tool.result;
+        toolMessage["tool"] = tool.pendingName;
+        if (!tool.callId.isEmpty())
         {
-            toolMessage.insert(QStringLiteral("tool_call_id"), w_->pendingToolCallId_);
+            toolMessage.insert(QStringLiteral("tool_call_id"), tool.callId);
         }
-        w_->ui_messagesArray.append(toolMessage);
-        if (w_->history_)
-            w_->history_->appendMessage(toolMessage);
-        w_->tool_result = "";
+        appendConversationMessage(toolMessage);
+        clearPendingToolResult();
     }
 
     // 把 message array 统一按照模型格式重新打包（去掉 UI-only 字段）
-    data.messagesArray = promptx::buildOaiChatMessages(w_->ui_messagesArray,
-                                                       w_->ui_DATES.date_prompt,
+    data.messagesArray = promptx::buildOaiChatMessages(sessionMessages(),
+                                                       data.date_prompt,
                                                        DEFAULT_SYSTEM_NAME,
                                                        DEFAULT_USER_NAME,
                                                        DEFAULT_MODEL_NAME);
 
     // 发送
-    w_->emit_send(data);
+    host->sendEndpointData(data);
 }
 
 void SessionController::handleCompletion(ENDPOINT_DATA &data)
 {
-    w_->markBackendActivity();
-    w_->cancelLazyUnload(QStringLiteral("handle completion"));
+    SessionHostPort *host = hostPort();
+    if (!host)
+        return;
+    host->noteBackendActivity();
+    host->cancelSessionLazyUnload(QStringLiteral("handle completion"));
 
     QJsonObject roleMessage;
     roleMessage.insert("role", DEFAULT_USER_NAME);
-    roleMessage.insert("content", w_->ui->input->textEdit->toPlainText().toUtf8().data());
-    w_->ui->input->textEdit->clear();
-    w_->ui_messagesArray.append(roleMessage);
+    roleMessage.insert("content", frontendPort() ? frontendPort()->takeDraftText(true) : QString());
+    appendConversationMessage(roleMessage, false);
 
-    data.messagesArray = w_->ui_messagesArray;
+    data.messagesArray = sessionMessages();
 
-    w_->emit_send(data);
+    host->sendEndpointData(data);
 }
 
 void SessionController::handleToolLoop(ENDPOINT_DATA &data)
 {
-    w_->markBackendActivity();
-    w_->cancelLazyUnload(QStringLiteral("handle tool loop"));
+    SessionHostPort *host = hostPort();
+    if (!host)
+        return;
+    host->noteBackendActivity();
+    host->cancelSessionLazyUnload(QStringLiteral("handle tool loop"));
 
     // 插入 tool 结果作为 tool 消息（文本模式下会在 net 层兼容为 user 前缀）
     QJsonObject toolMessage;
     toolMessage.insert("role", QStringLiteral("tool"));
-    toolMessage.insert("content", w_->tool_result);
-    const QString toolName = w_->lastToolPendingName_.isEmpty() ? w_->lastToolCallName_ : w_->lastToolPendingName_;
+    const PendingToolState tool = pendingToolState();
+    toolMessage.insert("content", tool.result);
+    const QString toolName = tool.effectiveName();
     if (!toolName.isEmpty())
     {
         toolMessage.insert(QStringLiteral("tool"), toolName);
     }
-    if (!w_->pendingToolCallId_.isEmpty())
+    if (!tool.callId.isEmpty())
     {
-        toolMessage.insert(QStringLiteral("tool_call_id"), w_->pendingToolCallId_);
+        toolMessage.insert(QStringLiteral("tool_call_id"), tool.callId);
     }
-    w_->ui_messagesArray.append(toolMessage);
-    if (w_->history_)
-        w_->history_->appendMessage(toolMessage);
+    const int toolMsgIndex = appendConversationMessage(toolMessage);
 
-    // 输出区：补齐 tool 结果显示（与记录条绑定）
-    if (!w_->tool_result.isEmpty() && !w_->engineerProxyRuntime_.active)
-    {
-        w_->flushPendingStream();
-        int recIdx = w_->currentToolRecordIndex_;
-        if (recIdx < 0)
-        {
-            recIdx = w_->recordCreate(Widget::RecordRole::Tool, toolName);
-        }
-        w_->appendRoleHeader(QStringLiteral("tool"));
-        w_->reflash_output(w_->tool_result, false, w_->textColorForRole(Widget::RecordRole::Tool));
-        w_->recordAppendText(recIdx, w_->tool_result);
-        if (recIdx >= 0)
-        {
-            w_->recordEntries_[recIdx].msgIndex = w_->ui_messagesArray.size() - 1;
-        }
-        if (recIdx == w_->currentToolRecordIndex_) w_->currentToolRecordIndex_ = -1;
-    }
-    w_->tool_result.clear();
+    // 输出区：补齐 tool 结果显示（与记录条绑定）。
+    if (SessionFrontendPort *frontend = frontendPort())
+        frontend->presentToolMessageRecord(toolName, tool.result, toolMsgIndex);
+    clearPendingToolResult();
 
-    data.messagesArray = promptx::buildOaiChatMessages(w_->ui_messagesArray,
-                                                       w_->ui_DATES.date_prompt,
+    data.messagesArray = promptx::buildOaiChatMessages(sessionMessages(),
+                                                       data.date_prompt,
                                                        DEFAULT_SYSTEM_NAME,
                                                        DEFAULT_USER_NAME,
                                                        DEFAULT_MODEL_NAME);
 
-    w_->emit_send(data);
+    host->sendEndpointData(data);
 }
 
 void SessionController::logCurrentTask(ConversationTask task)
@@ -460,91 +564,71 @@ void SessionController::logCurrentTask(ConversationTask task)
 
 void SessionController::startTurnFlow(ConversationTask task, bool continuingTool)
 {
-    if (w_->activeTurnId_ == 0 || !w_->turnActive_)
-    {
-        w_->activeTurnId_ = w_->nextTurnId_++;
-        w_->turnActive_ = true;
-    }
-    w_->toolInvocationActive_ = false;
+    SessionHostPort *host = hostPort();
+    if (!host)
+        return;
     const QString taskName = (task == ConversationTask::ChatReply) ? QStringLiteral("chat")
                                : (task == ConversationTask::Completion) ? QStringLiteral("completion")
                                : (task == ConversationTask::ToolLoop) ? QStringLiteral("tool-loop")
                                                                        : QStringLiteral("compaction");
-    const QString modeName = (w_->ui_mode == LINK_MODE) ? QStringLiteral("link") : QStringLiteral("local");
-    const QString detail = QStringLiteral("task=%1 mode=%2 tool_cont=%3").arg(taskName, modeName, continuingTool ? QStringLiteral("yes") : QStringLiteral("no"));
-    w_->logFlow(FlowPhase::Start, detail, SIGNAL_SIGNAL);
-    emit w_->ui2tool_turn(w_->activeTurnId_);
+    host->startSessionTurn(taskName, task == ConversationTask::ToolLoop, continuingTool);
 }
 
 void SessionController::finishTurnFlow(const QString &reason, bool success)
 {
-    if (w_->activeTurnId_ == 0)
-        return;
-    const QString detail = QStringLiteral("%1 kvUsed=%2").arg(reason).arg(w_->kvUsed_);
-    w_->logFlow(FlowPhase::Finish, detail, success ? SIGNAL_SIGNAL : WRONG_SIGNAL);
-    w_->turnActive_ = false;
-    w_->activeTurnId_ = 0;
+    if (SessionHostPort *host = hostPort())
+        host->finishSessionTurn(reason, success);
 }
 
 void SessionController::ensureSystemHeader(const QString &systemText)
 {
-    const bool needRecord = (w_->ui_state == CHAT_STATE);
-    const bool engineerProxyWasActive = w_->engineerProxyRuntime_.active;
-    // force UI path when printing system header
-    w_->engineerProxyRuntime_.active = false;
     // Ensure first message is system
-    if (w_->ui_messagesArray.isEmpty() || w_->ui_messagesArray.first().toObject().value(QStringLiteral("role")).toString() != QStringLiteral(DEFAULT_SYSTEM_NAME))
+    QJsonArray messages = sessionMessages();
+    int systemMessageIndex = 0;
+    if (messages.isEmpty() || messages.first().toObject().value(QStringLiteral("role")).toString() != QStringLiteral(DEFAULT_SYSTEM_NAME))
     {
         QJsonObject systemMessage;
         systemMessage.insert(QStringLiteral("role"), DEFAULT_SYSTEM_NAME);
         systemMessage.insert(QStringLiteral("content"), systemText);
-        if (w_->ui_messagesArray.isEmpty())
-            w_->ui_messagesArray.append(systemMessage);
+        if (messages.isEmpty())
+            systemMessageIndex = appendConversationMessage(systemMessage, false);
         else
-            w_->ui_messagesArray.replace(0, systemMessage);
+        {
+            replaceConversationMessage(0, systemMessage);
+            systemMessageIndex = 0;
+        }
+        messages = sessionMessages();
     }
 
-    const bool docEmpty = !w_->ui->output->document() || w_->ui->output->document()->isEmpty();
-    if (needRecord && (w_->lastSystemRecordIndex_ < 0 || docEmpty))
-    {
-        const int idx = w_->recordCreate(Widget::RecordRole::System);
-        w_->appendRoleHeader(QStringLiteral("system"));
-        w_->reflash_output_tool_highlight(systemText, w_->themeTextPrimary());
-        w_->recordAppendText(idx, systemText);
-        w_->lastSystemRecordIndex_ = idx;
-        if (!w_->ui_messagesArray.isEmpty())
-        {
-            w_->recordEntries_[idx].msgIndex = 0;
-        }
-        w_->logFlow(FlowPhase::Build, QStringLiteral("system header inserted"), SIGNAL_SIGNAL);
-    }
-    w_->engineerProxyRuntime_.active = engineerProxyWasActive;
+    if (SessionHostPort *host = hostPort())
+        host->presentSystemMessageRecord(systemText, messages.isEmpty() ? systemMessageIndex : 0);
+    syncRuntimeSessionState();
 }
 
 bool SessionController::shouldTriggerCompaction() const
 {
-    if (!w_->compactionSettings_.enabled)
+    SessionHostPort *host = hostPort();
+    if (!host)
         return false;
-    if (w_->ui_state != CHAT_STATE)
+    const COMPACTION_SETTINGS compaction = compactionSettings();
+    if (!compaction.enabled)
         return false;
-    if (w_->compactionInFlight_ || w_->compactionQueued_)
+    if (!host->canAutoCompact())
         return false;
-    if (w_->engineerProxyRuntime_.active)
-        return false;
-    if (w_->ui_messagesArray.isEmpty())
+    if (sessionMessages().isEmpty())
         return false;
 
-    const int cap = w_->resolvedContextLimitForUi();
+    const int cap = host->resolvedContextLimitForSession();
     if (cap <= 0)
         return false; // 未知上限时不自动压缩
-    const int used = qMax(0, w_->kvUsed_);
+    const int used = qMax(0, host->kvUsedForSession());
     if (used <= 0)
         return false;
 
     const double ratio = static_cast<double>(used) / static_cast<double>(cap);
-    if (ratio >= w_->compactionSettings_.trigger_ratio)
+    if (ratio >= compaction.trigger_ratio)
         return true;
-    if (used >= (cap - w_->compactionSettings_.reserve_tokens))
+    if (used >= (cap - compaction.reserve_tokens))
         return true;
     return false;
 }
@@ -553,87 +637,84 @@ bool SessionController::startCompactionIfNeeded(const InputPack &pendingInput)
 {
     if (!shouldTriggerCompaction())
         return false;
-    w_->compactionPendingInput_ = pendingInput;
-    w_->compactionPendingHasInput_ = true;
-    w_->compactionQueued_ = true;
-    const int cap = w_->resolvedContextLimitForUi();
-    w_->compactionReason_ = QStringLiteral("auto kvUsed=%1 cap=%2").arg(w_->kvUsed_).arg(cap);
+    if (SessionHostPort *host = hostPort())
+    {
+        const int cap = host->resolvedContextLimitForSession();
+        const QString reason = QStringLiteral("auto kvUsed=%1 cap=%2").arg(host->kvUsedForSession()).arg(cap);
+        host->queueCompactionInput(pendingInput, reason);
+    }
     return true;
 }
 
 void SessionController::startCompactionRun(const QString &reason)
 {
-    if (w_->compactionInFlight_)
+    SessionHostPort *host = hostPort();
+    if (!host || host->compactionInFlight())
         return;
-    if (w_->ui_messagesArray.isEmpty())
+    if (sessionMessages().isEmpty())
     {
-        w_->compactionQueued_ = false;
+        host->setCompactionQueued(false);
         resumeSendAfterCompaction();
         return;
     }
 
     // 计算压缩范围：保留 system + 最后 N 条，其余做摘要
     int startIdx = 0;
-    if (!w_->ui_messagesArray.isEmpty())
+    const QJsonArray messages = sessionMessages();
+    if (!messages.isEmpty())
     {
-        const QJsonObject first = w_->ui_messagesArray.first().toObject();
+        const QJsonObject first = messages.first().toObject();
         if (first.value(QStringLiteral("role")).toString() == QStringLiteral(DEFAULT_SYSTEM_NAME))
         {
             startIdx = 1;
         }
     }
-    const int keepTail = qMax(1, w_->compactionSettings_.keep_last_messages);
-    const int total = w_->ui_messagesArray.size();
+    const COMPACTION_SETTINGS compaction = compactionSettings();
+    const int keepTail = qMax(1, compaction.keep_last_messages);
+    const int total = messages.size();
     const int toIdx = total - keepTail;
     if (toIdx <= startIdx)
     {
         // 无可压缩内容，直接继续发送
-        w_->compactionQueued_ = false;
+        host->setCompactionQueued(false);
         resumeSendAfterCompaction();
         return;
     }
 
-    w_->compactionFromIndex_ = startIdx;
-    w_->compactionToIndex_ = toIdx;
     const QString sourceText = buildCompactionSourceText(startIdx, toIdx);
     if (sourceText.trimmed().isEmpty())
     {
-        w_->compactionQueued_ = false;
+        host->setCompactionQueued(false);
         resumeSendAfterCompaction();
         return;
     }
 
     // 准备压缩请求（不启用工具调用，避免进入工具链）
-    w_->compactionInFlight_ = true;
-    w_->compactionQueued_ = false;
-    w_->compactionHeaderPrinted_ = false;
-    w_->currentCompactIndex_ = -1;
-    w_->temp_assistant_history.clear();
-    w_->pendingAssistantHeaderReset_ = true;
-    w_->currentThinkIndex_ = -1;
-    w_->currentAssistantIndex_ = -1;
+    host->beginCompactionRequest(startIdx, toIdx);
 
     ENDPOINT_DATA data = prepareEndpointData();
     data.date_prompt = QStringLiteral("你是上下文压缩器。请将用户与助手的历史对话压缩成可用于继续对话的摘要。"
                                       "必须保留：重要事实、关键决策、待办事项、角色/项目/时间/数值信息。"
                                       "不要输出多余解释，不要虚构内容。只输出摘要正文。");
     const QString userPrompt = QStringLiteral("以下是待压缩对话片段（role: content）。请输出不超过 %1 字符的摘要：\n\n%2")
-                                   .arg(w_->compactionSettings_.max_summary_chars)
+                                   .arg(compaction.max_summary_chars)
                                    .arg(sourceText);
-    QJsonArray messages;
+    QJsonArray compactionMessages;
     QJsonObject userMsg;
     userMsg.insert(QStringLiteral("role"), QStringLiteral(DEFAULT_USER_NAME));
     userMsg.insert(QStringLiteral("content"), userPrompt);
-    messages.append(userMsg);
-    data.messagesArray = messages;
+    compactionMessages.append(userMsg);
+    data.messagesArray = compactionMessages;
     data.tool_call_mode = TOOL_CALL_TEXT;
     data.tools = QJsonArray();
-    data.temp = w_->compactionSettings_.temp;
-    data.n_predict = w_->compactionSettings_.n_predict;
+    data.temp = compaction.temp;
+    data.n_predict = compaction.n_predict;
     data.id_slot = -1; // 压缩请求不复用主会话 slot
 
-    w_->reflash_state(QStringLiteral("ui:上下文压缩中... (%1)").arg(reason), EVA_SIGNAL);
-    w_->emit_send(data);
+    if (SessionFrontendPort *frontend = frontendPort())
+        frontend->showSessionWarning(QStringLiteral("ui:上下文压缩中... (%1)").arg(reason), EVA_SIGNAL);
+    host->syncSessionRuntimeState(true);
+    host->sendEndpointData(data);
 }
 
 QString SessionController::extractMessageTextForCompaction(const QJsonObject &msg) const
@@ -663,9 +744,10 @@ QString SessionController::extractMessageTextForCompaction(const QJsonObject &ms
         return QString();
 
     QString trimmed = text.trimmed();
-    if (trimmed.size() > w_->compactionSettings_.max_message_chars)
+    const COMPACTION_SETTINGS compaction = compactionSettings();
+    if (trimmed.size() > compaction.max_message_chars)
     {
-        trimmed = trimmed.left(w_->compactionSettings_.max_message_chars);
+        trimmed = trimmed.left(compaction.max_message_chars);
         trimmed.append(QStringLiteral("..."));
     }
     return trimmed;
@@ -673,18 +755,20 @@ QString SessionController::extractMessageTextForCompaction(const QJsonObject &ms
 
 QString SessionController::buildCompactionSourceText(int fromIndex, int toIndex) const
 {
+    const QJsonArray messages = sessionMessages();
     if (fromIndex < 0)
         fromIndex = 0;
-    if (toIndex > w_->ui_messagesArray.size())
-        toIndex = w_->ui_messagesArray.size();
+    if (toIndex > messages.size())
+        toIndex = messages.size();
     if (fromIndex >= toIndex)
         return QString();
 
     QStringList lines;
     int totalChars = 0;
+    const COMPACTION_SETTINGS compaction = compactionSettings();
     for (int i = fromIndex; i < toIndex; ++i)
     {
-        const QJsonObject msg = w_->ui_messagesArray.at(i).toObject();
+        const QJsonObject msg = messages.at(i).toObject();
         if (msg.isEmpty())
             continue;
         QString role = msg.value(QStringLiteral("role")).toString();
@@ -707,14 +791,14 @@ QString SessionController::buildCompactionSourceText(int fromIndex, int toIndex)
         QString line = QStringLiteral("%1: %2").arg(role, content);
 
         const int nextTotal = totalChars + line.size();
-        if (w_->compactionSettings_.max_source_chars > 0 && nextTotal > w_->compactionSettings_.max_source_chars)
+        if (compaction.max_source_chars > 0 && nextTotal > compaction.max_source_chars)
         {
-            const int remain = w_->compactionSettings_.max_source_chars - totalChars;
+            const int remain = compaction.max_source_chars - totalChars;
             if (remain <= 0)
                 break;
             line = line.left(remain);
             lines << line;
-            totalChars = w_->compactionSettings_.max_source_chars;
+            totalChars = compaction.max_source_chars;
             break;
         }
         lines << line;
@@ -725,32 +809,19 @@ QString SessionController::buildCompactionSourceText(int fromIndex, int toIndex)
 
 bool SessionController::appendCompactionSummaryFile(const QJsonObject &summaryObj) const
 {
-    if (!w_->history_)
-        return false;
-    const QString sessionId = w_->history_->sessionId();
-    if (sessionId.isEmpty())
-        return false;
-    const QString baseDir = QDir(w_->applicationDirPath).filePath(QStringLiteral("EVA_TEMP/compaction/%1").arg(sessionId));
-    QDir().mkpath(baseDir);
-    QFile f(QDir(baseDir).filePath(QStringLiteral("summary.jsonl")));
-    if (!f.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text))
-        return false;
-    QJsonDocument doc(summaryObj);
-    QByteArray line = doc.toJson(QJsonDocument::Compact);
-    line.append('\n');
-    f.write(line);
-    f.close();
-    return true;
+    const SessionHostPort *host = hostPort();
+    return host ? host->appendCompactionSummary(summaryObj) : false;
 }
 
 void SessionController::applyCompactionSummary(const QString &summaryText)
 {
     // 生成 compact 消息并重建 messagesArray（保留 system + compact + 尾部消息）
+    const QJsonArray currentMessages = sessionMessages();
     QJsonArray newMessages;
     bool hasSystem = false;
-    if (!w_->ui_messagesArray.isEmpty())
+    if (!currentMessages.isEmpty())
     {
-        const QJsonObject first = w_->ui_messagesArray.first().toObject();
+        const QJsonObject first = currentMessages.first().toObject();
         if (first.value(QStringLiteral("role")).toString() == QStringLiteral(DEFAULT_SYSTEM_NAME))
         {
             newMessages.append(first);
@@ -760,43 +831,30 @@ void SessionController::applyCompactionSummary(const QString &summaryText)
     QJsonObject compactMsg;
     compactMsg.insert(QStringLiteral("role"), QStringLiteral("compact"));
     compactMsg.insert(QStringLiteral("content"), summaryText);
-    compactMsg.insert(QStringLiteral("range_from"), w_->compactionFromIndex_);
-    compactMsg.insert(QStringLiteral("range_to"), w_->compactionToIndex_);
+    compactMsg.insert(QStringLiteral("range_from"), hostPort() ? hostPort()->compactionFromIndex() : -1);
+    compactMsg.insert(QStringLiteral("range_to"), hostPort() ? hostPort()->compactionToIndex() : -1);
     compactMsg.insert(QStringLiteral("ts"), QDateTime::currentDateTime().toString(Qt::ISODate));
     newMessages.append(compactMsg);
 
-    for (int i = qMax(0, w_->compactionToIndex_); i < w_->ui_messagesArray.size(); ++i)
+    const int compactToIndex = hostPort() ? hostPort()->compactionToIndex() : 0;
+    for (int i = qMax(0, compactToIndex); i < currentMessages.size(); ++i)
     {
-        newMessages.append(w_->ui_messagesArray.at(i));
+        newMessages.append(currentMessages.at(i));
     }
-    w_->ui_messagesArray = newMessages;
+    replaceConversationMessages(newMessages, true);
 
-    // 记录条与消息索引已失配，统一清空 msgIndex（避免误编辑）
-    for (Widget::RecordEntry &entry : w_->recordEntries_)
-    {
-        entry.msgIndex = -1;
-    }
-    // 记录 compact 记录块的 msgIndex（若已输出）
-    if (w_->currentCompactIndex_ >= 0)
-    {
-        const int compactMsgIndex = hasSystem ? 1 : 0;
-        if (compactMsgIndex >= 0 && compactMsgIndex < w_->ui_messagesArray.size())
-        {
-            w_->recordEntries_[w_->currentCompactIndex_].msgIndex = compactMsgIndex;
-        }
-    }
-
-    if (w_->history_ && w_->ui_state == CHAT_STATE)
-    {
-        w_->history_->rewriteAllMessages(w_->ui_messagesArray);
-    }
+    const int compactMsgIndex = hasSystem ? 1 : 0;
+    if (SessionHostPort *host = hostPort())
+        host->remapRecordIndexesAfterCompaction(compactMsgIndex < sessionMessages().size() ? compactMsgIndex : -1);
 }
 
 void SessionController::handleCompactionReply(const QString &summaryText, const QString &reasoningText)
 {
     Q_UNUSED(reasoningText);
-    w_->compactionInFlight_ = false;
-    w_->compactionHeaderPrinted_ = false;
+    SessionHostPort *host = hostPort();
+    if (!host)
+        return;
+    host->finishCompactionRequest();
 
     QString summary = summaryText;
     summary.replace(QString(DEFAULT_THINK_BEGIN), QString());
@@ -806,30 +864,24 @@ void SessionController::handleCompactionReply(const QString &summaryText, const 
     {
         summary = QStringLiteral("（压缩结果为空）");
     }
-    if (w_->compactionSettings_.max_summary_chars > 0 && summary.size() > w_->compactionSettings_.max_summary_chars)
+    const COMPACTION_SETTINGS compaction = compactionSettings();
+    if (compaction.max_summary_chars > 0 && summary.size() > compaction.max_summary_chars)
     {
-        summary = summary.left(w_->compactionSettings_.max_summary_chars);
+        summary = summary.left(compaction.max_summary_chars);
         summary.append(QStringLiteral("..."));
     }
 
     // 如果压缩过程没有流式输出（或被静默），则此处补一个紫色记录块
-    if (w_->currentCompactIndex_ < 0)
-    {
-        w_->currentCompactIndex_ = w_->appendCompactRecord(summary);
-    }
-    else
-    {
-        w_->updateRecordEntryContent(w_->currentCompactIndex_, summary);
-    }
+    host->upsertCompactRecord(summary);
 
     // 写入 compaction 摘要文件（JSONL）
     QJsonObject summaryObj;
     summaryObj.insert(QStringLiteral("role"), QStringLiteral("compact"));
     summaryObj.insert(QStringLiteral("summary"), summary);
-    summaryObj.insert(QStringLiteral("range_from"), w_->compactionFromIndex_);
-    summaryObj.insert(QStringLiteral("range_to"), w_->compactionToIndex_);
-    summaryObj.insert(QStringLiteral("kv_used"), w_->kvUsed_);
-    summaryObj.insert(QStringLiteral("ctx_cap"), w_->resolvedContextLimitForUi());
+    summaryObj.insert(QStringLiteral("range_from"), host->compactionFromIndex());
+    summaryObj.insert(QStringLiteral("range_to"), host->compactionToIndex());
+    summaryObj.insert(QStringLiteral("kv_used"), host->kvUsedForSession());
+    summaryObj.insert(QStringLiteral("ctx_cap"), host->resolvedContextLimitForSession());
     summaryObj.insert(QStringLiteral("ts"), QDateTime::currentDateTime().toString(Qt::ISODate));
     appendCompactionSummaryFile(summaryObj);
 
@@ -837,16 +889,10 @@ void SessionController::handleCompactionReply(const QString &summaryText, const 
     applyCompactionSummary(summary);
 
     // 压缩后建议新 slot 开启，避免 KV 历史残留
-    w_->currentSlotId_ = -1;
-    w_->kvUsed_ = 0;
-    w_->kvUsedBeforeTurn_ = 0;
-    w_->kvStreamedTurn_ = 0;
-    w_->updateKvBarUi();
+    host->resetKvAfterCompaction();
 
     // 清理本轮压缩状态
-    w_->compactionFromIndex_ = -1;
-    w_->compactionToIndex_ = -1;
-    w_->compactionReason_.clear();
+    host->clearCompactionRange();
 
     // 继续发送原始用户请求（若存在）
     resumeSendAfterCompaction();
@@ -854,19 +900,21 @@ void SessionController::handleCompactionReply(const QString &summaryText, const 
 
 void SessionController::resumeSendAfterCompaction()
 {
-    if (!w_->compactionPendingHasInput_)
+    SessionHostPort *host = hostPort();
+    if (!host)
+        return;
+    if (!host->hasPendingCompactionInput())
     {
-        w_->normal_finish_pushover();
+        host->syncSessionRuntimeState(true);
+        host->finishNoPendingCompaction();
         return;
     }
 
-    const InputPack input = w_->compactionPendingInput_;
-    w_->compactionPendingHasInput_ = false;
-    w_->compactionPendingInput_ = InputPack();
+    const InputPack input = host->takePendingCompactionInput();
 
-    w_->currentTask_ = ConversationTask::ChatReply;
-    startTurnFlow(w_->currentTask_, false);
-    logCurrentTask(w_->currentTask_);
+    host->setCurrentSessionTask(ConversationTask::ChatReply);
+    startTurnFlow(ConversationTask::ChatReply, false);
+    logCurrentTask(ConversationTask::ChatReply);
     ENDPOINT_DATA data = prepareEndpointData();
     handleChatReply(data, input);
 }

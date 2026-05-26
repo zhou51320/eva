@@ -1,30 +1,35 @@
 ﻿#include "core/toolflow/tool_flow_controller.h"
 
-#include "widget/widget.h"
-#include "ui_widget.h"
-#include "utils/startuplogger.h"
-#include "utils/flowtracer.h"
-
-#include <QDir>
 #include <QJsonDocument>
 #include <QJsonParseError>
-#include <QMessageBox>
+#include <QDebug>
+#include <QStringList>
+#include <QtGlobal>
 
-ToolFlowController::ToolFlowController(Widget *owner)
-    : QObject(owner), w_(owner)
+#include <exception>
+
+ToolFlowController::ToolFlowController(QObject *owner)
+    : QObject(owner), host_(dynamic_cast<ToolFlowHostPort *>(owner))
 {
+}
+
+ToolFlowHostPort *ToolFlowController::hostPort() const
+{
+    return host_;
 }
 
 void ToolFlowController::recvPushover()
 {
-    w_->flushPendingStream();
-    w_->lastToolCallName_.clear();
-    w_->lastToolPendingName_.clear();
-    w_->pendingToolCallId_.clear();
-    const QJsonArray toolCallsSnapshot = w_->pendingToolCallsPayload_;
-    w_->pendingToolCallsPayload_ = QJsonArray();
+    ToolFlowHostPort *host = hostPort();
+    if (!host)
+        return;
+
+    host->flushToolFlowStream();
+    host->clearToolFlowCallMarkers();
+    host->syncToolFlowRuntimeState(true);
+    const QJsonArray toolCallsSnapshot = host->takeToolFlowPendingCalls();
     // Separate all reasoning (<think>...</think>) blocks from final content; capture both roles
-    QString finalText = w_->temp_assistant_history;
+    QString finalText = host->assistantStreamText();
     const QString tBegin = QString(DEFAULT_THINK_BEGIN);
     const QString tEnd = QString(DEFAULT_THINK_END);
     QStringList reasonings;
@@ -43,30 +48,24 @@ void ToolFlowController::recvPushover()
     }
     const QString reasoningText = reasonings.join("");
     // 压缩请求回合：将输出作为摘要处理，避免走常规 assistant/tool 链路
-    if (w_->compactionInFlight_)
+    if (host->compactionActiveForToolFlow())
     {
-        w_->handleCompactionReply(finalText, reasoningText);
-        w_->temp_assistant_history = "";
-        w_->currentThinkIndex_ = -1;
-        w_->currentAssistantIndex_ = -1;
+        host->handleToolFlowCompactionReply(finalText, reasoningText);
+        host->setAssistantStreamText(QString());
+        host->resetAssistantStreamIndexes();
         return;
     }
     // 重要：不要在这里打印 assistant_len/reasoning_len（字符长度），它很容易被误解为 token 数。
     // 链接模式下我们只关心 token 口径（来自 usage/timings 的校准结果，以及 UI 侧的 KV 汇总）。
     {
-        const int promptTok = qMax(0, w_->kvPromptTokensTurn_);
-        const int genTok = qMax(0, w_->kvStreamedTurn_);
-        const int reasoningTok = qMax(0, w_->lastReasoningTokens_);
-        const int usedTok = qMax(0, w_->kvUsed_);
-        const int turnTok = qMax(0, w_->kvTokensTurn_);
-        w_->logFlow(FlowPhase::NetDone,
-                    QStringLiteral("tokens prompt=%1 gen=%2 reasoning=%3 turn=%4 used=%5")
-                        .arg(promptTok)
-                        .arg(genTok)
-                        .arg(reasoningTok)
-                        .arg(turnTok)
-                        .arg(usedTok),
-                    SIGNAL_SIGNAL);
+        host->logToolFlow(FlowPhase::NetDone,
+                          QStringLiteral("tokens prompt=%1 gen=%2 reasoning=%3 turn=%4 used=%5")
+                              .arg(qMax(0, host->promptTokensForToolFlow()))
+                              .arg(qMax(0, host->generatedTokensForToolFlow()))
+                              .arg(qMax(0, host->reasoningTokensForToolFlow()))
+                              .arg(qMax(0, host->turnTokensForToolFlow()))
+                              .arg(qMax(0, host->usedTokensForToolFlow())),
+                          SIGNAL_SIGNAL);
     }
     // Persist assistant message (with optional reasoning) into UI/history
     QJsonObject roleMessage;
@@ -76,61 +75,45 @@ void ToolFlowController::recvPushover()
     {
         roleMessage.insert("reasoning_content", reasoningText);
     }
-    if (w_->ui_tool_call_mode == TOOL_CALL_FUNCTION && !toolCallsSnapshot.isEmpty())
+    if (host->toolCallModeForToolFlow() == TOOL_CALL_FUNCTION && !toolCallsSnapshot.isEmpty())
     {
         roleMessage.insert(QStringLiteral("tool_calls"), toolCallsSnapshot);
     }
-    if (w_->engineerProxyRuntime_.active)
+    if (host->engineerProxyActiveForToolFlow())
     {
-        w_->handleEngineerAssistantMessage(finalText, reasoningText);
-        w_->temp_assistant_history = "";
-        w_->currentThinkIndex_ = -1;
-        w_->currentAssistantIndex_ = -1;
+        host->handleToolFlowEngineerAssistant(finalText, reasoningText);
+        host->setAssistantStreamText(QString());
+        host->resetAssistantStreamIndexes();
         return;
     }
-    w_->ui_messagesArray.append(roleMessage);
-    if (w_->history_ && w_->ui_state == CHAT_STATE)
-    {
-        w_->history_->appendMessage(roleMessage);
-    }
-    const int asstMsgIndex = w_->ui_messagesArray.size() - 1;
-    if (!reasoningText.isEmpty() && w_->currentThinkIndex_ >= 0)
-    {
-        w_->recordEntries_[w_->currentThinkIndex_].msgIndex = asstMsgIndex;
-    }
-    if (w_->currentAssistantIndex_ >= 0)
-    {
-        w_->recordEntries_[w_->currentAssistantIndex_].msgIndex = asstMsgIndex;
-    }
+    const int asstMsgIndex = host->appendToolFlowAssistantMessage(roleMessage);
+    if (!reasoningText.isEmpty())
+        host->bindToolFlowReasoningRecord(asstMsgIndex);
+    host->bindToolFlowAssistantRecord(asstMsgIndex);
+    host->publishToolFlowAssistantRecord(finalText, reasoningText, asstMsgIndex);
 
     // 输出区增强：若模型输出包含完整的 <tool_call>...</tool_call> 工具调用块，
     // 则在“流式输出结束”这一刻对该 assistant 记录块做一次重渲染：
     // - 让工具名/参数名/关键字段以更醒目的颜色显示（用户更容易看懂模型在调用什么）；
     // - 同时解决“<tool_call> JSON 跨 chunk 分片”导致的高亮不完整问题（这里用完整 finalText 重绘一次即可）。
     // 仅当包含 tool_call 标签时才触发，避免对普通对话输出产生额外开销。
-    const bool hasToolCallBlock = finalText.contains(QStringLiteral("<tool_call>")) &&
-                                  finalText.contains(QStringLiteral("</tool_call>"));
-    if (hasToolCallBlock && w_->currentAssistantIndex_ >= 0)
-    {
-        w_->updateRecordEntryContent(w_->currentAssistantIndex_, finalText);
-    }
-    w_->currentThinkIndex_ = -1;
-    w_->currentAssistantIndex_ = -1;
-    w_->temp_assistant_history = "";
+    host->refreshToolFlowAssistantRecordIfNeeded(finalText);
+    host->resetAssistantStreamIndexes();
+    host->setAssistantStreamText(QString());
 
-    if (w_->ui_state == COMPLETE_STATE) // 补完模式的回答只输出一次
+    if (host->completeModeForToolFlow()) // 补完模式的回答只输出一次
     {
-        w_->normal_finish_pushover();
-        w_->on_reset_clicked(); // 自动重置
+        host->finishNormalToolFlow();
+        host->resetConversationAfterToolFlowCompletion(); // 自动重置
     }
     else
     {
         // 工具链开关开启时，尝试解析工具 JSON
-        if (w_->is_load_tool)
+        if (host->toolsEnabledForToolFlow())
         {
-            if (w_->ui_tool_call_mode == TOOL_CALL_FUNCTION)
+            if (host->toolCallModeForToolFlow() == TOOL_CALL_FUNCTION)
             {
-                auto parseArguments = [&](const QJsonValue &value) -> mcp::json {
+                auto parseArguments = [](const QJsonValue &value) -> mcp::json {
                     if (value.isObject())
                     {
                         const QJsonDocument doc(value.toObject());
@@ -163,7 +146,7 @@ void ToolFlowController::recvPushover()
 
                 if (toolCallsSnapshot.isEmpty())
                 {
-                    w_->normal_finish_pushover();
+                    host->finishNormalToolFlow();
                 }
                 else
                 {
@@ -178,7 +161,7 @@ void ToolFlowController::recvPushover()
                     }
                     if (callObj.isEmpty())
                     {
-                        w_->normal_finish_pushover();
+                        host->finishNormalToolFlow();
                     }
                     else
                     {
@@ -200,50 +183,48 @@ void ToolFlowController::recvPushover()
 
                         if (tools_name.isEmpty())
                         {
-                            w_->normal_finish_pushover();
+                            host->finishNormalToolFlow();
                         }
                         else
                         {
-                            w_->tools_call = mcp::json::object();
-                            w_->tools_call["name"] = tools_name.toStdString();
-                            w_->tools_call["arguments"] = parseArguments(argsValue);
-                            w_->pendingToolCallId_ = toolCallId;
-
-                            w_->lastToolCallName_ = tools_name;
-                            w_->lastToolPendingName_ = tools_name; // 保留工具名，供工具返回时附加截图等场景
-                            w_->reflash_state("ui:" + w_->jtr("clicked") + " " + tools_name, SIGNAL_SIGNAL);
+                            mcp::json call = mcp::json::object();
+                            call["name"] = tools_name.toStdString();
+                            call["arguments"] = parseArguments(argsValue);
+                            host->setToolFlowCurrentCall(call, toolCallId);
+                            host->rememberToolFlowPendingName(tools_name); // 保留工具名，供工具返回时附加截图等场景
+                            host->syncToolFlowRuntimeState(true);
+                            host->showToolFlowClicked(tools_name);
+                            host->publishToolFlowStarted(tools_name);
 
                             // 记录区：工具“触发即显示”，不必等工具执行完成再出现记录块。
                             // - 这里只创建记录块（图标/徽标），不输出内容；
                             // - 工具返回时在 handleToolLoop() 中复用该记录块写入 tool_result。
-                            if (tools_name != QStringLiteral("answer") && tools_name != QStringLiteral("response"))
-                            {
-                                w_->currentToolRecordIndex_ = w_->recordCreate(Widget::RecordRole::Tool, tools_name);
-                            }
+                            host->createLegacyToolFlowRecordIfNeeded(tools_name);
                             // 工具层面指出结束
                             if (tools_name == QStringLiteral("system_engineer_proxy"))
                             {
-                                w_->startEngineerProxyTool(w_->tools_call);
+                                host->startToolFlowEngineerProxy();
                                 return;
                             }
                             if (tools_name == QStringLiteral("schedule_task"))
                             {
-                                w_->handleScheduleToolCall(w_->tools_call);
+                                host->handleToolFlowScheduleCall();
                                 return;
                             }
                             if (tools_name == QStringLiteral("answer") || tools_name == QStringLiteral("response"))
                             {
-                                w_->pendingToolCallId_.clear();
-                                w_->normal_finish_pushover();
+                                host->clearToolFlowPendingCallId();
+                                host->syncToolFlowRuntimeState(true);
+                                host->finishNormalToolFlow();
                             }
                             else
                             {
-                                w_->logFlow(FlowPhase::ToolParsed, QStringLiteral("name=%1").arg(tools_name), SIGNAL_SIGNAL);
-                                w_->pendingAssistantHeaderReset_ = true;
-                                w_->toolInvocationActive_ = true;
-                                emit w_->ui2tool_turn(w_->activeTurnId_);
-                                w_->logFlow(FlowPhase::ToolStart, QStringLiteral("name=%1").arg(tools_name), SIGNAL_SIGNAL);
-                                emit w_->ui2tool_exec(w_->tools_call);
+                                host->logToolFlow(FlowPhase::ToolParsed, QStringLiteral("name=%1").arg(tools_name), SIGNAL_SIGNAL);
+                                host->markToolFlowAssistantHeaderReset();
+                                host->setToolFlowInvocationActive(true);
+                                host->emitToolFlowTurn(host->activeToolFlowTurnId());
+                                host->logToolFlow(FlowPhase::ToolStart, QStringLiteral("name=%1").arg(tools_name), SIGNAL_SIGNAL);
+                                host->emitToolFlowExec();
                                 // use tool; decoding remains paused
                             }
                         }
@@ -252,51 +233,50 @@ void ToolFlowController::recvPushover()
             }
             else
             {
-                QString tool_str = w_->ui_messagesArray.last().toObject().value("content").toString();
-                w_->tools_call = w_->XMLparser(tool_str);
-                if (w_->tools_call.empty())
+                const QString tool_str = host->lastAssistantMessageTextForToolFlow();
+                const mcp::json call = host->parseTextToolCallForToolFlow(tool_str);
+                host->setToolFlowCurrentCall(call, QString());
+                if (call.empty())
                 {
-                    w_->normal_finish_pushover();
+                    host->finishNormalToolFlow();
                 }
                 else
                 {
-                    if (w_->tools_call.contains("name") && w_->tools_call.contains("arguments"))
+                    if (call.contains("name") && call.contains("arguments"))
                     {
-                        QString tools_name = QString::fromStdString(w_->tools_call.value("name", ""));
-                        w_->lastToolCallName_ = tools_name;
-                        w_->lastToolPendingName_ = tools_name; // 保留工具名，供工具返回时附加截图等场景
-                        w_->reflash_state("ui:" + w_->jtr("clicked") + " " + tools_name, SIGNAL_SIGNAL);
+                        QString tools_name = QString::fromStdString(call.value("name", ""));
+                        host->rememberToolFlowPendingName(tools_name); // 保留工具名，供工具返回时附加截图等场景
+                        host->syncToolFlowRuntimeState(true);
+                        host->showToolFlowClicked(tools_name);
+                        host->publishToolFlowStarted(tools_name);
 
                         // 记录区：工具“触发即显示”，不必等工具执行完成再出现记录块。
                         // - 这里只创建记录块（图标/徽标），不输出内容；
                         // - 工具返回时在 handleToolLoop() 中复用该记录块写入 tool_result。
-                        if (tools_name != QStringLiteral("answer") && tools_name != QStringLiteral("response"))
-                        {
-                            w_->currentToolRecordIndex_ = w_->recordCreate(Widget::RecordRole::Tool, tools_name);
-                        }
+                        host->createLegacyToolFlowRecordIfNeeded(tools_name);
                         // 工具层面指出结束
-                        if (tools_name == "system_engineer_proxy")
+                        if (tools_name == QStringLiteral("system_engineer_proxy"))
                         {
-                            w_->startEngineerProxyTool(w_->tools_call);
+                            host->startToolFlowEngineerProxy();
                             return;
                         }
-                        if (tools_name == "schedule_task")
+                        if (tools_name == QStringLiteral("schedule_task"))
                         {
-                            w_->handleScheduleToolCall(w_->tools_call);
+                            host->handleToolFlowScheduleCall();
                             return;
                         }
-                        if (tools_name == "answer" || tools_name == "response")
+                        if (tools_name == QStringLiteral("answer") || tools_name == QStringLiteral("response"))
                         {
-                            w_->normal_finish_pushover();
+                            host->finishNormalToolFlow();
                         }
                         else
                         {
-                            w_->logFlow(FlowPhase::ToolParsed, QStringLiteral("name=%1").arg(tools_name), SIGNAL_SIGNAL);
-                            w_->pendingAssistantHeaderReset_ = true;
-                            w_->toolInvocationActive_ = true;
-                            emit w_->ui2tool_turn(w_->activeTurnId_);
-                            w_->logFlow(FlowPhase::ToolStart, QStringLiteral("name=%1").arg(tools_name), SIGNAL_SIGNAL);
-                            emit w_->ui2tool_exec(w_->tools_call);
+                            host->logToolFlow(FlowPhase::ToolParsed, QStringLiteral("name=%1").arg(tools_name), SIGNAL_SIGNAL);
+                            host->markToolFlowAssistantHeaderReset();
+                            host->setToolFlowInvocationActive(true);
+                            host->emitToolFlowTurn(host->activeToolFlowTurnId());
+                            host->logToolFlow(FlowPhase::ToolStart, QStringLiteral("name=%1").arg(tools_name), SIGNAL_SIGNAL);
+                            host->emitToolFlowExec();
                             // use tool; decoding remains paused
                         }
                     }
@@ -305,22 +285,22 @@ void ToolFlowController::recvPushover()
         }
         else
         {
-            w_->normal_finish_pushover();
+            host->finishNormalToolFlow();
         }
     }
-    w_->markBackendActivity();
-    w_->scheduleLazyUnload();
+    host->noteToolFlowBackendActivity();
+    host->scheduleToolFlowLazyUnload();
 }
 
 void ToolFlowController::recvToolCalls(const QString &payload)
 {
-    if (w_->ui_tool_call_mode != TOOL_CALL_FUNCTION)
+    ToolFlowHostPort *host = hostPort();
+    if (!host || host->toolCallModeForToolFlow() != TOOL_CALL_FUNCTION)
     {
         return;
     }
 
-    w_->pendingToolCallsPayload_ = QJsonArray();
-    w_->pendingToolCallId_.clear();
+    host->clearToolFlowPendingCalls();
 
     const QString trimmed = payload.trimmed();
     if (trimmed.isEmpty())
@@ -357,7 +337,7 @@ void ToolFlowController::recvToolCalls(const QString &payload)
 
     if (!calls.isEmpty())
     {
-        w_->pendingToolCallsPayload_ = calls;
+        host->setToolFlowPendingCalls(calls);
     }
     else
     {
@@ -365,7 +345,7 @@ void ToolFlowController::recvToolCalls(const QString &payload)
     }
 
     // 让工具调用信息作为模型输出展示
-    w_->flushPendingStream();
+    host->flushToolFlowStream();
     QString displayText;
     if (!calls.isEmpty())
     {
@@ -378,38 +358,29 @@ void ToolFlowController::recvToolCalls(const QString &payload)
     }
     if (displayText.isEmpty())
         return;
-    if (!w_->temp_assistant_history.isEmpty() && !w_->temp_assistant_history.endsWith('\n'))
-    {
-        displayText.prepend('\n');
-    }
-    w_->reflash_output(displayText, true, w_->themeTextPrimary());
+    host->renderToolFlowCallPayload(displayText);
 }
 
 void ToolFlowController::recvToolPushover(QString tool_result_)
 {
-    w_->toolInvocationActive_ = false;
-    if (tool_result_.contains("<ylsdamxssjxxdd:showdraw>")) // 有图像要显示的情况
-    {
-        w_->wait_to_show_images_filepath.append(tool_result_.split("<ylsdamxssjxxdd:showdraw>")[1]); // 文生图后待显示图像的图像路径
-        w_->tool_result = "stablediffusion " + w_->jtr("call successful, image save at") + " " + tool_result_.split("<ylsdamxssjxxdd:showdraw>")[1];
-    }
-    else
-    {
-        w_->tool_result = tool_result_;
-        w_->tool_result = w_->truncateString(w_->tool_result, DEFAULT_MAX_INPUT); // 超出最大输入的部分截断
-    }
-    w_->logFlow(FlowPhase::ToolResult,
-                QStringLiteral("len=%1 images=%2").arg(w_->tool_result.size()).arg(w_->wait_to_show_images_filepath.size()),
-                SIGNAL_SIGNAL);
-    w_->logFlow(FlowPhase::ContinueTurn, QStringLiteral("feed tool result to model"), SIGNAL_SIGNAL);
+    ToolFlowHostPort *host = hostPort();
+    if (!host)
+        return;
+    host->setToolFlowResultFromRaw(tool_result_);
+    host->logToolFlow(FlowPhase::ToolResult,
+                      QStringLiteral("len=%1 images=%2").arg(host->toolFlowResult().size()).arg(host->toolFlowImageResultCount()),
+                      SIGNAL_SIGNAL);
+    host->syncToolFlowRuntimeState(true);
+    host->publishToolFlowFinished();
+    host->logToolFlow(FlowPhase::ContinueTurn, QStringLiteral("feed tool result to model"), SIGNAL_SIGNAL);
 
-    if (w_->engineerProxyRuntime_.active)
+    if (host->engineerProxyActiveForToolFlow())
     {
-        const QString observation = w_->tool_result;
-        w_->handleEngineerToolResult(observation);
-        w_->tool_result.clear();
+        const QString observation = host->toolFlowResult();
+        host->handleToolFlowEngineerObservation(observation);
+        host->clearToolFlowResult();
         return;
     }
 
-    w_->on_send_clicked(); // 触发发送继续预测下一个词
+    host->continueToolFlowSend(); // 触发发送继续预测下一个词
 }

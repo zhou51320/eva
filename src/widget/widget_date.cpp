@@ -995,25 +995,27 @@ void Widget::on_set_clicked()
         return;
     }
     reflash_state("ui:" + jtr("clicked") + jtr("set"), SIGNAL_SIGNAL);
-    if (ui_state == CHAT_STATE)
+    const SETTINGS settings = sessionSettingsSnapshot();
+    const ConversationMode conversation = runtimeConversationModeForUi();
+    if (conversation == ConversationMode::Chat)
     {
         settings_ui->chat_btn->setChecked(1), chat_change();
     }
-    else if (ui_state == COMPLETE_STATE)
+    else if (conversation == ConversationMode::Complete)
     {
         settings_ui->complete_btn->setChecked(1), complete_change();
     }
     // 服务模式已移除
     // 展示最近一次设置值
-    settings_ui->temp_slider->setValue(qRound(ui_SETTINGS.temp * 100.0));
+    settings_ui->temp_slider->setValue(qRound(settings.temp * 100.0));
     settings_ui->temp_label->setText(jtr("temperature") + " " + QString::number(settings_ui->temp_slider->value() / 100.0));
-    settings_ui->ngl_slider->setValue(ui_SETTINGS.ngl);
-    settings_ui->nctx_slider->setValue(ui_SETTINGS.nctx);
-    settings_ui->repeat_slider->setValue(qRound(ui_SETTINGS.repeat * 100.0));
+    settings_ui->ngl_slider->setValue(settings.ngl);
+    settings_ui->nctx_slider->setValue(settings.nctx);
+    settings_ui->repeat_slider->setValue(qRound(settings.repeat * 100.0));
     settings_ui->repeat_label->setText(jtr("repeat") + " " + QString::number(settings_ui->repeat_slider->value() / 100.0));
     // Ensure top-k/top-p sliders reflect last confirmed settings on every open
-    settings_ui->topk_slider->setValue(ui_SETTINGS.top_k);
-    settings_ui->topp_slider->setValue(qRound(ui_SETTINGS.hid_top_p * 100.0));
+    settings_ui->topk_slider->setValue(settings.top_k);
+    settings_ui->topp_slider->setValue(qRound(settings.hid_top_p * 100.0));
     {
         const double val = settings_ui->topp_slider->value() / 100.0;
         settings_ui->topp_label->setText("TOP_P " + QString::number(val));
@@ -1021,19 +1023,19 @@ void Widget::on_set_clicked()
     }
     if (settings_ui->reasoning_comboBox)
     {
-        const QString normalized = sanitizeReasoningEffort(ui_SETTINGS.reasoning_effort);
+        const QString normalized = sanitizeReasoningEffort(settings.reasoning_effort);
         int idx = settings_ui->reasoning_comboBox->findData(normalized);
         if (idx < 0) idx = 0;
         settings_ui->reasoning_comboBox->setCurrentIndex(idx);
     }
     {
         const int cap = qMax(1, predictTokenCap());
-        settings_ui->npredict_spin->setValue(qBound(-1, ui_SETTINGS.hid_npredict, cap));
+        settings_ui->npredict_spin->setValue(qBound(-1, settings.hid_npredict, cap));
     }
     npredict_change();
-    settings_ui->lora_LineEdit->setText(ui_SETTINGS.lorapath);
-    settings_ui->mmproj_LineEdit->setText(ui_SETTINGS.mmprojpath);
-    settings_ui->nthread_slider->setValue(ui_SETTINGS.nthread);
+    settings_ui->lora_LineEdit->setText(settings.lorapath);
+    settings_ui->mmproj_LineEdit->setText(settings.mmprojpath);
+    settings_ui->nthread_slider->setValue(settings.nthread);
     settings_ui->port_lineEdit->setText(ui_port);
     if (settings_ui->allow_control_checkbox)
     {
@@ -1041,7 +1043,7 @@ void Widget::on_set_clicked()
         settings_ui->allow_control_checkbox->setChecked(controlHostAllowed_);
     }
     // 打开设置时记录当前设置快照，用于确认时判断是否有修改
-    settings_snapshot_ = ui_SETTINGS;
+    settings_snapshot_ = settings;
     port_snapshot_ = ui_port;
     device_snapshot_ = settings_ui->device_comboBox->currentText().trimmed().toLower();
     backendOverrideSnapshot_ = DeviceManager::programOverrides();

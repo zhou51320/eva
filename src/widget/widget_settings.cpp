@@ -836,7 +836,7 @@ void Widget::settings_ui_confirm_button_clicked()
     // Inform Expend (evaluation tab) of latest settings snapshot
     {
         SETTINGS snap = ui_SETTINGS;
-        if (ui_mode == LINK_MODE)
+        if (runtimeModeForUi() == RuntimeMode::Link)
             snap.nctx = (slotCtxMax_ > 0 ? slotCtxMax_ : 0);
         emit ui2expend_settings(snap);
     }
@@ -895,7 +895,8 @@ void Widget::settings_ui_confirm_button_clicked()
         {
             if (!onlyHostChange && changeSummary.requiresSessionReset)
             {
-                if (ui_mode == LOCAL_MODE || ui_mode == LINK_MODE)
+                const RuntimeMode mode = runtimeModeForUi();
+                if (mode == RuntimeMode::Local || mode == RuntimeMode::Link)
                 {
                     on_reset_clicked();
                 }
@@ -908,7 +909,7 @@ void Widget::settings_ui_confirm_button_clicked()
             commitPendingBackendOverrides();
             backendOverrideSnapshot_ = DeviceManager::programOverrides();
         }
-        if (ui_mode == LOCAL_MODE)
+        if (runtimeModeForUi() == RuntimeMode::Local)
         {
             ensureLocalServer();
             if (!lastServerRestart_ && changeSummary.requiresSessionReset)
@@ -1026,7 +1027,9 @@ void Widget::set_set()
     get_set(); // 获取设置中的纸面值
 
     // 如果不是对话模式则禁用约定
-    if (ui_state != CHAT_STATE)
+    const ConversationMode conversation = runtimeConversationModeForUi();
+    const RuntimeMode mode = runtimeModeForUi();
+    if (conversation != ConversationMode::Chat)
     {
         date_ui->prompt_box->setEnabled(0);
         date_ui->tool_box->setEnabled(0);
@@ -1039,7 +1042,7 @@ void Widget::set_set()
 
     // 本地模式：按需重启 llama-server（内部会切至装载中并更新端点）；
     // 若无需重启（仅采样参数变化），则简单重置对话上下文。
-    if (ui_mode == LOCAL_MODE)
+    if (mode == RuntimeMode::Local)
     {
         ensureLocalServer();
         if (!lastServerRestart_)
@@ -1048,7 +1051,7 @@ void Widget::set_set()
         }
         // 若发生了重启，等待 onServerReady() 回调恢复 UI 和上下文
     }
-    else if (ui_mode == LINK_MODE)
+    else if (mode == RuntimeMode::Link)
     {
         on_reset_clicked();
     }

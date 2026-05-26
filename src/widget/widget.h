@@ -72,7 +72,9 @@
 
 #include "ui_date_dialog.h"
 #include "ui_settings_dialog.h"
+#include "../core/session/session_host_port.h"
 #include "../core/session/session_types.h"
+#include "../core/toolflow/tool_flow_host_port.h"
 // #include "utils/globalshortcut.h"
 #include "../prompt.h"
 #include "../utils/customswitchbutton.h"
@@ -87,6 +89,7 @@
 #include "../service/backend/localproxy.h"
 #include "../net/controlchannel.h"
 #include "../service/net/request_snapshot.h"
+#include "../runtime/runtime_events.h"
 #include "../service/backend/xbackend.h" // local llama.cpp server manager
 #include "../xconfig.h"  // ui和bot都要导入的共有配置
 #include "thirdparty/QHotkey/QHotkey/qhotkey.h"
@@ -130,7 +133,7 @@ enum class LinkProfile
     Control
 };
 
-class Widget : public QWidget
+class Widget : public QWidget, public SessionHostPort, public ToolFlowHostPort
 {
     Q_OBJECT
     friend class SessionController;
@@ -145,6 +148,159 @@ class Widget : public QWidget
     Widget(QWidget *parent = nullptr, QString applicationDirPath_ = "./");
     ~Widget();
     void setRuntime(EvaRuntime *runtime);
+    void syncRuntimeSessionMirror(bool replaceMessages = true,
+                                  bool projectActivity = false,
+                                  bool projectIdentity = false,
+                                  bool projectConfig = false);
+    quint64 runtimeActiveTurnIdForUi() const;
+    bool runtimeTurnActiveForUi() const;
+    bool runtimeToolActiveForUi() const;
+    bool runtimeBusyForUi() const;
+    RuntimeMode runtimeModeForUi() const;
+    ConversationMode runtimeConversationModeForUi() const;
+    bool runtimeBackendReadyForUi() const;
+    bool runtimeEndpointReadyForUi() const;
+    bool ensureRuntimeReadyForSend();
+    void projectRuntimePushingState();
+    void projectRuntimeIdleState(bool clearTurnId = false);
+    void projectRuntimeErrorIdleState(const QString &error, bool clearTurnId = true);
+    void projectRuntimeTurnObserved();
+    void projectRuntimeBackendOfflineState(bool clearLoad = false);
+    void projectRuntimeLocalLoadingState();
+    void projectRuntimeLocalReadyState(const APIS &localApis, const QString &frontendEndpoint);
+    void projectRuntimeLinkReadyState(const APIS &linkApis);
+    void projectRuntimeControlLinkState();
+    bool runtimeBackendTransitioningForUi() const;
+    int runtimeKvUsedForUi() const;
+    int runtimePromptTokensForUi() const;
+    int runtimeStreamedTokensForUi() const;
+    int runtimeReasoningTokensForUi() const;
+    QString takeDraftText(bool allowText) override;
+    QStringList draftImageFilePaths() const override;
+    QStringList draftDocumentFilePaths() const override;
+    QStringList draftAudioFilePaths() const override;
+    void clearDraftAttachments() override;
+    bool shouldAttachControllerFrame() const override;
+    QString captureControllerFrameImagePath() override;
+    void rememberControllerFrameForModel(const QString &imagePath) override;
+    void presentUserMessageRecord(const QString &text, int messageIndex) override;
+    void presentToolMessageRecord(const QString &toolName, const QString &text, int messageIndex) override;
+    bool outputDocumentEmpty() const override;
+    void showSessionWarning(const QString &message, SIGNAL_STATE state) override;
+    RuntimeState runtimeStateSnapshotForSession() const override;
+    bool runtimeSessionReady() const override;
+    void syncSessionRuntimeState(bool replaceMessages) override;
+    QJsonArray legacySessionMessages() const override;
+    void setLegacySessionMessages(const QJsonArray &messages) override;
+    int appendRuntimeSessionMessage(const QJsonObject &message) override;
+    bool replaceRuntimeSessionMessage(int index, const QJsonObject &message) override;
+    SETTINGS sessionSettingsSnapshot() const override;
+    APIS sessionApisSnapshot() const;
+    QString sessionSystemPrompt() const override;
+    QStringList sessionStopwords() const override;
+    ConversationMode sessionConversationMode() const override;
+    int sessionToolCallMode() const override;
+    QJsonArray sessionFunctionTools() const override;
+    int sessionSlotId() const override;
+    quint64 sessionActiveTurnId() const override;
+    QString sessionModeName() const override;
+    QString sessionEndpointForHistory() const override;
+    QString sessionModelForHistory() const override;
+    int sessionContextSize() const override;
+    bool shouldBeginHistorySession() const override;
+    QString historySessionId() const override;
+    void beginHistorySession(const SessionMeta &meta) override;
+    void appendHistoryMessage(const QJsonObject &message) override;
+    void rewriteHistoryMessages(const QJsonArray &messages) override;
+    QString pendingToolResult() const override;
+    QString pendingToolName() const override;
+    QString pendingToolCallId() const override;
+    QString lastToolCallName() const override;
+    void clearPendingToolResult() override;
+    void noteBackendActivity() override;
+    void cancelSessionLazyUnload(const QString &reason) override;
+    void sendEndpointData(const ENDPOINT_DATA &data) override;
+    quint64 startSessionTurn(const QString &taskName, bool isToolLoop, bool continuingTool) override;
+    void finishSessionTurn(const QString &reason, bool success) override;
+    void logSessionFlow(FlowPhase phase, const QString &detail, SIGNAL_STATE state) override;
+    bool canAutoCompact() const override;
+    COMPACTION_SETTINGS sessionCompactionSettings() const override;
+    int resolvedContextLimitForSession() const override;
+    int kvUsedForSession() const override;
+    bool compactionInFlight() const override;
+    bool compactionQueued() const override;
+    void setCompactionQueued(bool queued) override;
+    void queueCompactionInput(const InputPack &input, const QString &reason) override;
+    void beginCompactionRequest(int fromIndex, int toIndex) override;
+    void finishCompactionRequest() override;
+    int compactionFromIndex() const override;
+    int compactionToIndex() const override;
+    void clearCompactionRange() override;
+    bool hasPendingCompactionInput() const override;
+    InputPack takePendingCompactionInput() override;
+    void resetKvAfterCompaction() override;
+    void finishNoPendingCompaction() override;
+    void setCurrentSessionTask(ConversationTask task) override;
+    bool appendCompactionSummary(const QJsonObject &summaryObj) const override;
+    int upsertCompactRecord(const QString &summary) override;
+    void remapRecordIndexesAfterCompaction(int compactMessageIndex) override;
+    void presentSystemMessageRecord(const QString &systemText, int messageIndex) override;
+    void flushToolFlowStream() override;
+    void clearToolFlowCallMarkers() override;
+    void syncToolFlowRuntimeState(bool replaceMessages) override;
+    QJsonArray takeToolFlowPendingCalls() override;
+    QString assistantStreamText() const override;
+    void setAssistantStreamText(const QString &text) override;
+    void resetAssistantStreamIndexes() override;
+    bool compactionActiveForToolFlow() const override;
+    void handleToolFlowCompactionReply(const QString &summaryText, const QString &reasoningText) override;
+    int promptTokensForToolFlow() const override;
+    int generatedTokensForToolFlow() const override;
+    int reasoningTokensForToolFlow() const override;
+    int usedTokensForToolFlow() const override;
+    int turnTokensForToolFlow() const override;
+    void logToolFlow(FlowPhase phase, const QString &detail, SIGNAL_STATE state) override;
+    int toolCallModeForToolFlow() const override;
+    bool engineerProxyActiveForToolFlow() const override;
+    void handleToolFlowEngineerAssistant(const QString &message, const QString &reasoning) override;
+    int appendToolFlowAssistantMessage(const QJsonObject &message) override;
+    void bindToolFlowReasoningRecord(int messageIndex) override;
+    void bindToolFlowAssistantRecord(int messageIndex) override;
+    void publishToolFlowAssistantRecord(const QString &text, const QString &reasoning, int messageIndex) override;
+    void refreshToolFlowAssistantRecordIfNeeded(const QString &text) override;
+    bool completeModeForToolFlow() const override;
+    bool toolsEnabledForToolFlow() const override;
+    void finishNormalToolFlow() override;
+    void resetConversationAfterToolFlowCompletion() override;
+    void setToolFlowCurrentCall(const mcp::json &call, const QString &callId) override;
+    mcp::json currentToolFlowCall() const override;
+    void rememberToolFlowPendingName(const QString &toolName) override;
+    void clearToolFlowPendingCallId() override;
+    void showToolFlowClicked(const QString &toolName) override;
+    void publishToolFlowStarted(const QString &toolName) override;
+    void createLegacyToolFlowRecordIfNeeded(const QString &toolName) override;
+    void startToolFlowEngineerProxy() override;
+    void handleToolFlowScheduleCall() override;
+    void markToolFlowAssistantHeaderReset() override;
+    void setToolFlowInvocationActive(bool active) override;
+    quint64 activeToolFlowTurnId() const override;
+    void emitToolFlowTurn(quint64 turnId) override;
+    void emitToolFlowExec() override;
+    QString lastAssistantMessageTextForToolFlow() const override;
+    mcp::json parseTextToolCallForToolFlow(const QString &text) override;
+    void noteToolFlowBackendActivity() override;
+    void scheduleToolFlowLazyUnload() override;
+    void setToolFlowPendingCalls(const QJsonArray &calls) override;
+    void clearToolFlowPendingCalls() override;
+    void renderToolFlowCallPayload(const QString &displayText) override;
+    void setToolFlowResultFromRaw(const QString &toolResult) override;
+    QString toolFlowResult() const override;
+    int toolFlowImageResultCount() const override;
+    QString pendingToolFlowName() const override;
+    void publishToolFlowFinished() override;
+    void handleToolFlowEngineerObservation(const QString &observation) override;
+    void clearToolFlowResult() override;
+    void continueToolFlowSend() override;
     QString applicationDirPath;
     // Engineer tool working directory; default to {applicationDirPath}/EVA_WORK
     QString engineerWorkDir;
@@ -249,18 +405,18 @@ class Widget : public QWidget
     QString custom1_date_system;
     QString custom2_date_system;
     void preLoad();                                              // 装载前动作
-    bool is_load = false;                                        // 模型装载标签
-    bool is_run = false;                                         // 模型运行标签,方便设置界面的状态
-    bool toolInvocationActive_ = false;                          // 是否存在未完成的工具调用
+    bool is_load = false;                                        // 兼容缓存：装载状态事实源优先读取 EvaRuntime
+    bool is_run = false;                                         // 兼容缓存：运行中状态事实源优先读取 EvaRuntime
+    bool toolInvocationActive_ = false;                          // 兼容缓存：工具调用状态事实源优先读取 EvaRuntime
     bool engineerArchitectMode_ = false;                         // 是否启用系统林机师模式
     bool engineerProxyOuterActive_ = false;                      // 架构师代理是否仍在执行
-    EVA_MODE ui_mode = LOCAL_MODE;                               // 机体的模式
-    EVA_STATE ui_state = CHAT_STATE;                             // 机体的状态
+    EVA_MODE ui_mode = LOCAL_MODE;                               // 兼容缓存：运行模式事实源优先读取 EvaRuntime
+    EVA_STATE ui_state = CHAT_STATE;                             // 兼容缓存：对话模式事实源优先读取 EvaRuntime
     ConversationTask currentTask_ = ConversationTask::ChatReply; // current send task
     bool engineerRefreshAfterResetScheduled_ = false;            // 延迟刷新是否已排队
     bool engineerRestoreOutputAfterEngineerRefresh_ = false;     // 刷新后是否需要恢复滚动
     quint64 nextTurnId_ = 1;                                     // monotonic turn id for tracing a full flow
-    quint64 activeTurnId_ = 0;                                   // turn id of the currently active flow
+    quint64 activeTurnId_ = 0;                                   // 兼容缓存：当前 turn id 事实源优先读取 EvaRuntime
 
     QString history_lorapath = "";
     QString history_mmprojpath = "";
@@ -288,7 +444,7 @@ class Widget : public QWidget
     int kvUsed_ = 0;                          // total KV residency after the current turn (cache + prompt + output)
     int kvUsedBeforeTurn_ = 0;                // KV tokens present before generation starts (cache + prompt baseline)
     int kvStreamedTurn_ = 0;                  // live count of generated tokens streamed during the turn
-    bool turnActive_ = false;                 // a request is in-flight
+    bool turnActive_ = false;                 // 兼容缓存：请求运行态事实源优先读取 EvaRuntime
     bool turnThinkHeaderPrinted_ = false;     // printed think header this turn
     bool turnAssistantHeaderPrinted_ = false; // printed assistant header this turn
     bool turnThinkActive_ = false;            // streaming: inside <think> section
@@ -379,8 +535,8 @@ class Widget : public QWidget
     QString forcedPortOverride_;              // 若非空则下一次 ensureLocalServer 强制使用此端口
     bool portFallbackInFlight_ = false;       // 标记当前是否在端口降级流程中
     bool portConflictDetected_ = false;       // 最近一次 llama-server 输出中检测到端口占用
-    BackendLifecycleState backendLifecycleState_ = BackendLifecycleState::Stopped; // 本地后端生命周期状态（统一 UI 与重载控制）
-    bool backendOnline_ = false;
+    BackendLifecycleState backendLifecycleState_ = BackendLifecycleState::Stopped; // 兼容缓存：后端生命周期事实源优先读取 EvaRuntime
+    bool backendOnline_ = false;                                                   // 兼容缓存：后端 ready 事实源优先读取 EvaRuntime
     bool backendFallbackActive_ = false;    // 是否处于自动后端回退流程（避免循环）
     QStringList backendFallbackTried_;      // 本轮已尝试过的后端列表
     bool lazyWakeInFlight_ = false;
@@ -670,7 +826,7 @@ class Widget : public QWidget
     APIS apis;                           // api配置参数
     QJsonArray ui_messagesArray;         // 将要构造的历史数据
     QString temp_assistant_history = ""; // 临时数据
-    QString current_api;                 // 当前负载端点
+    QString current_api;                 // 兼容缓存：当前端点事实源优先读取 EvaRuntime
     int currentSlotId_ = -1;             // llama-server slot id for this conversation
     HistoryStore *history_ = nullptr;    // persistent history writer
     struct PendingStreamUpdate
@@ -732,6 +888,7 @@ class Widget : public QWidget
     void recv_predecode(QString bot_predecode_content_);                         // 传递模型预解码的内容
     void recv_toolpushover(QString tool_result_);                                // 处理tool推理完毕的槽
     void recv_tool_calls(const QString &payload);                                // function_call 工具调用回填
+    void handleRuntimeEvent(const RuntimeEvent &event);                          // 将运行层事件投影到旧 Widget UI
     void recv_controller_hint(int x, int y, const QString &description); // 桌面控制器：绘制屏幕叠加提示
     void recv_controller_hint_done(int x, int y, const QString &description); // 桌面控制器：动作执行完毕后绘制完成态提示（绿色）
     void recv_controller_overlay(quint64 turnId, const QString &argsJson); // 桌面控制器：保存带 bbox 等信息的标注截图（EVA_TEMP/overlay）
@@ -1009,6 +1166,7 @@ class Widget : public QWidget
     void broadcastControlRecordAdd(RecordRole role, const QString &toolName);
     void broadcastControlRecordUpdate(int index, const QString &deltaText);
     void broadcastControlUiPhase(const QString &phase);
+    QString controlPhaseForUi() const;
     void applyControlMonitor(const QJsonObject &mon);
     void applyControlRecordClear();
     void applyControlRecordAdd(RecordRole role, const QString &toolName);
@@ -1034,6 +1192,8 @@ class Widget : public QWidget
     ControlChannel *acpBridgeChannel_ = nullptr;
     bool controlHostAllowed_ = false;
     bool acpBridgeConnected_ = false;
+    quint64 controlEventSeq_ = 0;    // 控制/ACP 事件单调序号，用于远端按顺序合并流式状态
+    QString controlUiPhase_ = QStringLiteral("init");
     LinkProfile linkProfile_ = LinkProfile::Api;
     bool controlThinkActive_ = false; // controller side: track ongoing think stream
     QString controlStreamRole_;       // last role hint from host ("think"/"assistant")

@@ -22,7 +22,7 @@
 bool Widget::eventFilter(QObject *obj, QEvent *event)
 {
     // 输入区右键菜单
-    if (obj == ui->input && event->type() == QEvent::ContextMenu && ui_state == CHAT_STATE)
+    if (obj == ui->input && event->type() == QEvent::ContextMenu && runtimeConversationModeForUi() == ConversationMode::Chat)
     {
         QContextMenuEvent *contextMenuEvent = static_cast<QContextMenuEvent *>(event);
         right_menu->exec(contextMenuEvent->globalPos());

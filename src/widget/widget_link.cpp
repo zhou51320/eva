@@ -1,5 +1,6 @@
 #include "ui_widget.h"
 #include "widget.h"
+#include "runtime/eva_runtime.h"
 #include "../utils/textparse.h"
 #include "../utils/flowtracer.h"
 #include "../utils/openai_compat.h"
@@ -99,7 +100,6 @@ QString normalizeLinkEndpoint(const QString &rawEndpoint)
 void Widget::set_api()
 {
     // 纯请求式：不再使用本地嵌入模型进程（xbot）
-    is_load = false;  // 重置
     historypath = ""; // 重置
     linkProfile_ = LinkProfile::Api;
     controlAwaitingHello_ = false;
@@ -126,9 +126,21 @@ void Widget::set_api()
         apis.api_chat_endpoint = OpenAiCompat::chatCompletionsPath(baseUrl);
         apis.api_completion_endpoint = OpenAiCompat::completionsPath(baseUrl);
     }
+    if (runtime_)
+    {
+        RuntimeConnectRemoteCommand command;
+        command.endpoint = apis.api_endpoint;
+        command.apiKey = apis.api_key;
+        command.model = apis.api_model;
+        command.sampling = ui_SETTINGS;
+        QString runtimeError;
+        if (!runtime_->connectRemote(command, &runtimeError))
+        {
+            qWarning().noquote() << QStringLiteral("EvaRuntime connectRemote failed:") << runtimeError;
+        }
+    }
 
-    // 切换为链接模式
-    ui_mode = LINK_MODE; // 按照链接模式的行为来
+    projectRuntimeLinkReadyState(apis);
     // 进入链接模式后：
     // 1) 终止当前的流式请求（若有）
     emit ui2net_stop(true);
@@ -140,27 +152,16 @@ void Widget::set_api()
     }
     setBackendLifecycleState(BackendLifecycleState::Stopped, QStringLiteral("switch link mode"), SIGNAL_SIGNAL, false);
     reflash_state("ui:" + jtr("eva link"), EVA_SIGNAL);
-    if (ui_state == CHAT_STATE)
-    {
-        current_api = apis.api_endpoint + apis.api_chat_endpoint;
-    }
-    else
-    {
-        current_api = apis.api_endpoint + apis.api_completion_endpoint;
-    }
-    EVA_title = jtr("current api") + " " + current_api;
+    EVA_title = jtr("current api") + " " + sessionEndpointForHistory();
     reflash_state("ui:" + EVA_title, USUAL_SIGNAL);
     this->setWindowTitle(EVA_title);
     trayIcon->setToolTip(EVA_title);
     setBaseWindowIcon(QIcon(":/logo/eva.png"));
 
-    // Broadcast to Expend (evaluation tab) as well
-    emit ui2expend_apis(apis);
-    emit ui2expend_mode(ui_mode);
     {
         // 切换链接模式后立即同步评估页上下文上限（未探测到时标记为未知）
         SETTINGS snap = ui_SETTINGS;
-        if (ui_mode == LINK_MODE) snap.nctx = (slotCtxMax_ > 0 ? slotCtxMax_ : 0);
+        if (runtimeModeForUi() == RuntimeMode::Link) snap.nctx = (slotCtxMax_ > 0 ? slotCtxMax_ : 0);
         emit ui2expend_settings(snap);
     }
     // Reset LINK-mode memory/state since endpoint/key/model changed
@@ -171,7 +172,7 @@ void Widget::set_api()
     kvUsedBeforeTurn_ = 0;
     kvStreamedTurn_ = 0;
     lastReasoningTokens_ = 0;
-    turnActive_ = false;
+    projectRuntimeIdleState(true);
     sawPromptPast_ = false;
     sawFinalPast_ = false;
     currentSlotId_ = -1;
@@ -202,17 +203,17 @@ void Widget::set_api()
         SessionMeta meta;
         meta.id = QString::number(QDateTime::currentMSecsSinceEpoch());
         meta.title = "";
-        meta.endpoint = current_api;
-        meta.model = apis.api_model;
+        meta.endpoint = sessionEndpointForHistory();
+        meta.model = sessionModelForHistory();
         meta.system = ui_DATES.date_prompt;
-        meta.n_ctx = ui_SETTINGS.nctx;
+        meta.n_ctx = sessionContextSize();
         meta.slot_id = -1;
         meta.startedAt = QDateTime::currentDateTime();
         history_->begin(meta);
         history_->appendMessage(systemMessage);
         currentSlotId_ = -1;
     }
-    ui_state_normal();
+    syncRuntimeSessionMirror(true);
     auto_save_user();
 }
 
@@ -220,7 +221,7 @@ void Widget::set_api()
 void Widget::tool_testhandleTimeout()
 {
     // Ensure latest LINK apis before pushing (users may edit endpoint/key/model after linking)
-    if (ui_mode == LINK_MODE)
+    if (runtimeModeForUi() == RuntimeMode::Link)
     {
         QString clean_endpoint = normalizeLinkEndpoint(api_endpoint_LineEdit->text());
         const QString clean_key = TextParse::removeAllWhitespace(api_key_LineEdit->text());
@@ -243,19 +244,13 @@ void Widget::tool_testhandleTimeout()
     ENDPOINT_DATA data;
     data.date_prompt = ui_DATES.date_prompt;
     data.stopwords = ui_DATES.extra_stop_words;
-    if (ui_state == COMPLETE_STATE)
-    {
-        data.is_complete_state = true;
-    }
-    else
-    {
-        data.is_complete_state = false;
-    }
-    data.temp = ui_SETTINGS.temp;
-    data.repeat = ui_SETTINGS.repeat;
-    data.top_k = ui_SETTINGS.top_k;
-    data.top_p = ui_SETTINGS.hid_top_p;
-    data.n_predict = ui_SETTINGS.hid_npredict;
+    data.is_complete_state = runtimeConversationModeForUi() == ConversationMode::Complete;
+    const SETTINGS settings = sessionSettingsSnapshot();
+    data.temp = settings.temp;
+    data.repeat = settings.repeat;
+    data.top_k = settings.top_k;
+    data.top_p = settings.hid_top_p;
+    data.n_predict = settings.hid_npredict;
     data.messagesArray = ui_messagesArray;
     data.id_slot = currentSlotId_;
 
@@ -285,8 +280,9 @@ void Widget::change_api_dialog(bool enable)
 // Probe remote /v1/models to determine max context for current model (LINK mode)
 void Widget::fetchRemoteContextLimit()
 {
-    if (ui_mode != LINK_MODE) return;
-    QUrl base = QUrl::fromUserInput(apis.api_endpoint);
+    if (runtimeModeForUi() != RuntimeMode::Link) return;
+    const APIS stateApis = sessionApisSnapshot();
+    QUrl base = QUrl::fromUserInput(stateApis.api_endpoint);
     if (!base.isValid()) return;
     // 无论是否本机，优先读取 /props 获取实际运行时 n_ctx；若缺失则回退 /v1/models
     fetchPropsContextLimit(true, true);
@@ -295,8 +291,9 @@ void Widget::fetchRemoteContextLimit()
 void Widget::fetchModelsContextLimit(bool isLocalEndpoint)
 {
     Q_UNUSED(isLocalEndpoint);
-    if (ui_mode != LINK_MODE) return;
-    QUrl base = QUrl::fromUserInput(apis.api_endpoint);
+    if (runtimeModeForUi() != RuntimeMode::Link) return;
+    const APIS stateApis = sessionApisSnapshot();
+    QUrl base = QUrl::fromUserInput(stateApis.api_endpoint);
     if (!base.isValid()) return;
     // /v1/models 是最常见的 OpenAI 兼容路径；但火山方舟 Ark 的 base 已经包含 /api/v3，
     // 因此 models 路径应为 /models（最终拼成 /api/v3/models）
@@ -483,7 +480,7 @@ void Widget::fetchModelsContextLimit(bool isLocalEndpoint)
             updateKvBarUi();
             // Notify Expend (evaluation tab) to refresh displayed n_ctx
             SETTINGS snap = ui_SETTINGS;
-            if (ui_mode == LINK_MODE) snap.nctx = (slotCtxMax_ > 0 ? slotCtxMax_ : 0);
+            if (runtimeModeForUi() == RuntimeMode::Link) snap.nctx = (slotCtxMax_ > 0 ? slotCtxMax_ : 0);
             emit ui2expend_settings(snap);
             const QString log = QStringLiteral("net:n_ctx via /v1/models = %1").arg(maxCtx);
             FlowTracer::log(FlowChannel::Net, dbgLines.join(QStringLiteral(" | ")), 0);
@@ -534,8 +531,9 @@ void Widget::fetchModelsContextLimit(bool isLocalEndpoint)
 // - /v1/config：返回服务启动时加载的静态配置（通常是首个模型）
 void Widget::fetchMindieContextLimit(bool fallbackModels)
 {
-    if (ui_mode != LINK_MODE) return;
-    QUrl base = QUrl::fromUserInput(apis.api_endpoint);
+    if (runtimeModeForUi() != RuntimeMode::Link) return;
+    const APIS stateApis = sessionApisSnapshot();
+    QUrl base = QUrl::fromUserInput(stateApis.api_endpoint);
     if (!base.isValid()) return;
 
     auto fallback = [this, fallbackModels]() {
@@ -652,8 +650,9 @@ void Widget::fetchMindieContextLimit(bool fallbackModels)
 // Fallback: GET /props from llama.cpp tools/server to obtain runtime n_ctx
 void Widget::fetchPropsContextLimit(bool allowLinkMode, bool fallbackModels)
 {
-    if (ui_mode != LOCAL_MODE && !allowLinkMode) return;
-    QUrl base = QUrl::fromUserInput(apis.api_endpoint);
+    if (runtimeModeForUi() != RuntimeMode::Local && !allowLinkMode) return;
+    const APIS stateApis = sessionApisSnapshot();
+    QUrl base = QUrl::fromUserInput(stateApis.api_endpoint);
     if (!base.isValid()) return;
     QUrl url(base);
     QString path = url.path();
@@ -738,6 +737,7 @@ void Widget::applyDiscoveredAlias(const QString &alias, const QString &sourceTag
     apis.api_model = alias;
     api_model_LineEdit->setText(alias);
     emit ui2expend_apis(apis);
+    syncRuntimeSessionMirror(false, false, true, true);
     FlowTracer::log(FlowChannel::Net,
                     QStringLiteral("net:model via %1 = %2").arg(sourceTag, alias),
                     0);
@@ -750,8 +750,8 @@ void Widget::applyDiscoveredContext(int nctx, const QString &sourceTag)
     enforcePredictLimit();
     updateKvBarUi();
     // Notify Expend (evaluation tab) with latest effective n_ctx
-    SETTINGS snap = ui_SETTINGS;
-    if (ui_mode == LINK_MODE) snap.nctx = (slotCtxMax_ > 0 ? slotCtxMax_ : 0);
+    SETTINGS snap = sessionSettingsSnapshot();
+    if (runtimeModeForUi() == RuntimeMode::Link) snap.nctx = (slotCtxMax_ > 0 ? slotCtxMax_ : 0);
     emit ui2expend_settings(snap);
     FlowTracer::log(FlowChannel::Net,
                     QStringLiteral("net:n_ctx via %1 = %2").arg(sourceTag).arg(nctx),
@@ -764,10 +764,14 @@ int Widget::resolvedContextLimitForUi() const
     // - LINK 模式：优先用探测值；若未探测到则返回 0 表示未知（避免用本地默认值误导用户）。
     // - LOCAL 模式：优先用日志/快照探测到的 slotCtxMax_；但当并发开启时，部分后端可能会上报“总 n_ctx”
     //   （= 单槽 * 并发），这会导致 UI 把“总上下文”误当成“单槽记忆容量”。因此这里做一次矫正。
-    const int parallel = (ui_SETTINGS.hid_parallel > 0) ? ui_SETTINGS.hid_parallel : 1;
-    const int configuredSlot = (ui_SETTINGS.nctx > 0) ? ui_SETTINGS.nctx : DEFAULT_NCTX;
+    const RuntimeState runtimeState = runtimeStateSnapshotForSession();
+    const bool hasRuntime = runtimeState.initialized;
+    const RuntimeMode mode = hasRuntime ? runtimeState.mode : (ui_mode == LINK_MODE ? RuntimeMode::Link : RuntimeMode::Local);
+    const SETTINGS settings = hasRuntime ? runtimeState.settings : ui_SETTINGS;
+    const int parallel = (settings.hid_parallel > 0) ? settings.hid_parallel : 1;
+    const int configuredSlot = (settings.nctx > 0) ? settings.nctx : DEFAULT_NCTX;
 
-    if (ui_mode == LINK_MODE)
+    if (mode == RuntimeMode::Link)
     {
         return (slotCtxMax_ > 0) ? slotCtxMax_ : 0;
     }
@@ -794,14 +798,21 @@ QString Widget::resolvedContextLabelForUi() const
 
 QString Widget::resolvedModelLabelForUi() const
 {
+    const RuntimeState runtimeState = runtimeStateSnapshotForSession();
+    if (runtimeState.initialized && !runtimeState.currentModel.trimmed().isEmpty())
+        return runtimeState.currentModel.trimmed();
+
     // LINK 模式下优先展示用户填写/探测到的模型名，否则用“未知”占位，避免误用本地默认模型名
-    if (ui_mode == LINK_MODE)
+    const bool linkMode = runtimeState.initialized ? runtimeState.mode == RuntimeMode::Link : ui_mode == LINK_MODE;
+    if (linkMode)
     {
-        const QString linkModel = apis.api_model.trimmed();
+        const QString linkModel = runtimeState.initialized ? runtimeState.apis.api_model.trimmed()
+                                                           : apis.api_model.trimmed();
         if (!linkModel.isEmpty()) return linkModel;
         return QStringLiteral("未知");
     }
-    QString modelLabel = QFileInfo(ui_SETTINGS.modelpath).fileName();
+    const SETTINGS settings = runtimeState.initialized ? runtimeState.settings : ui_SETTINGS;
+    QString modelLabel = QFileInfo(settings.modelpath).fileName();
     if (modelLabel.isEmpty()) modelLabel = jtr("unknown model");
     return modelLabel;
 }
@@ -844,11 +855,11 @@ void Widget::ensureAcpBridgeHost()
     if (!acpBridgeChannel_) return;
     if (acpBridgeChannel_->startHost(static_cast<quint16>(DEFAULT_ACP_BRIDGE_PORT), QHostAddress::LocalHost))
     {
-        FlowTracer::log(FlowChannel::Net, QStringLiteral("[acp-bridge] listening on 127.0.0.1:%1").arg(DEFAULT_ACP_BRIDGE_PORT), activeTurnId_);
+        FlowTracer::log(FlowChannel::Net, QStringLiteral("[acp-bridge] listening on 127.0.0.1:%1").arg(DEFAULT_ACP_BRIDGE_PORT), runtimeActiveTurnIdForUi());
     }
     else
     {
-        FlowTracer::log(FlowChannel::Net, QStringLiteral("[acp-bridge] listen failed %1").arg(DEFAULT_ACP_BRIDGE_PORT), activeTurnId_);
+        FlowTracer::log(FlowChannel::Net, QStringLiteral("[acp-bridge] listen failed %1").arg(DEFAULT_ACP_BRIDGE_PORT), runtimeActiveTurnIdForUi());
     }
 }
 
@@ -858,7 +869,7 @@ void Widget::handleAcpBridgeClientChanged(bool connected, const QString &reason)
     FlowTracer::log(FlowChannel::Net,
                     QStringLiteral("[acp-bridge] client %1 (%2)")
                         .arg(connected ? QStringLiteral("connected") : QStringLiteral("disconnected"), reason),
-                    activeTurnId_);
+                    runtimeActiveTurnIdForUi());
 }
 
 void Widget::sendAcpBridgeResponse(const QJsonObject &payload)
@@ -881,27 +892,42 @@ void Widget::sendToRemotePeers(const QJsonObject &payload)
 
 QJsonObject Widget::buildAcpBridgeState() const
 {
+    const RuntimeState runtimeState = runtimeStateSnapshotForSession();
+    const bool hasRuntime = runtimeState.initialized;
+    const bool linkMode = hasRuntime ? runtimeState.mode == RuntimeMode::Link : ui_mode == LINK_MODE;
+    const SETTINGS settings = hasRuntime ? runtimeState.settings : ui_SETTINGS;
+    const APIS stateApis = hasRuntime ? runtimeState.apis : apis;
     QJsonObject state;
-    state.insert(QStringLiteral("mode"), ui_mode == LINK_MODE ? QStringLiteral("link") : QStringLiteral("local"));
-    state.insert(QStringLiteral("state"), backendLifecycleStateName(backendLifecycleState_));
-    state.insert(QStringLiteral("ready"), ui_mode == LINK_MODE ? !apis.api_endpoint.isEmpty() : backendOnline_);
-    state.insert(QStringLiteral("endpoint"), current_api);
-    state.insert(QStringLiteral("current_model"), resolvedModelLabelForUi());
-    state.insert(QStringLiteral("current_model_path"), ui_mode == LINK_MODE ? QString() : ui_SETTINGS.modelpath);
-    state.insert(QStringLiteral("backend_choice"), ui_mode == LINK_MODE ? QStringLiteral("link") : ui_device_backend);
-    state.insert(QStringLiteral("backend_resolved"), ui_mode == LINK_MODE ? QStringLiteral("remote") : runtimeDeviceBackend_);
-    state.insert(QStringLiteral("server_running"), serverManager && serverManager->isRunning());
-    state.insert(QStringLiteral("port"), ui_mode == LINK_MODE ? QString() : ui_port);
-    state.insert(QStringLiteral("nctx"), ui_SETTINGS.nctx);
-    state.insert(QStringLiteral("ngl"), ui_SETTINGS.ngl);
-    state.insert(QStringLiteral("nthread"), ui_SETTINGS.nthread);
-    state.insert(QStringLiteral("parallel"), ui_SETTINGS.hid_parallel);
-    state.insert(QStringLiteral("mmproj_path"), ui_SETTINGS.mmprojpath);
-    state.insert(QStringLiteral("lora_path"), ui_SETTINGS.lorapath);
-    state.insert(QStringLiteral("api_endpoint"), ui_mode == LINK_MODE ? apis.api_endpoint : QString());
-    state.insert(QStringLiteral("api_model"), ui_mode == LINK_MODE ? apis.api_model : QString());
-    state.insert(QStringLiteral("ui_state"), ui_state == CHAT_STATE ? QStringLiteral("chat") : QStringLiteral("complete"));
-    state.insert(QStringLiteral("is_run"), is_run);
+    state.insert(QStringLiteral("mode"), hasRuntime ? runtimeModeName(runtimeState.mode)
+                                                    : (linkMode ? QStringLiteral("link") : QStringLiteral("local")));
+    state.insert(QStringLiteral("state_source"), QStringLiteral("bridge"));
+    state.insert(QStringLiteral("bridge_available"), true);
+    state.insert(QStringLiteral("direct_runtime"), false);
+    if (hasRuntime)
+        state.insert(QStringLiteral("runtime_state"), runtimeStateToJson(runtimeState));
+    state.insert(QStringLiteral("state"), hasRuntime ? backendLifecycleStateName(runtimeState.backendLifecycle)
+                                                     : backendLifecycleStateName(backendLifecycleState_));
+    state.insert(QStringLiteral("ready"), hasRuntime ? runtimeState.backendReady
+                                                     : runtimeBackendReadyForUi());
+    state.insert(QStringLiteral("endpoint"), hasRuntime && !runtimeState.endpoint.isEmpty() ? runtimeState.endpoint : sessionEndpointForHistory());
+    state.insert(QStringLiteral("current_model"), hasRuntime && !runtimeState.currentModel.isEmpty() ? runtimeState.currentModel : resolvedModelLabelForUi());
+    state.insert(QStringLiteral("current_model_path"), hasRuntime ? runtimeState.currentModelPath : (linkMode ? QString() : ui_SETTINGS.modelpath));
+    state.insert(QStringLiteral("backend_choice"), hasRuntime ? runtimeState.backendChoice : (linkMode ? QStringLiteral("link") : ui_device_backend));
+    state.insert(QStringLiteral("backend_resolved"), hasRuntime ? runtimeState.backendResolved : (linkMode ? QStringLiteral("remote") : runtimeDeviceBackend_));
+    state.insert(QStringLiteral("server_running"), !linkMode && serverManager && serverManager->isRunning());
+    state.insert(QStringLiteral("port"), linkMode ? QString() : ui_port);
+    state.insert(QStringLiteral("nctx"), settings.nctx);
+    state.insert(QStringLiteral("ngl"), settings.ngl);
+    state.insert(QStringLiteral("nthread"), settings.nthread);
+    state.insert(QStringLiteral("parallel"), settings.hid_parallel);
+    state.insert(QStringLiteral("mmproj_path"), settings.mmprojpath);
+    state.insert(QStringLiteral("lora_path"), settings.lorapath);
+    state.insert(QStringLiteral("api_endpoint"), linkMode ? stateApis.api_endpoint : QString());
+    state.insert(QStringLiteral("api_model"), linkMode ? stateApis.api_model : QString());
+    state.insert(QStringLiteral("current_task"), hasRuntime ? runtimeState.currentTask : QString());
+    state.insert(QStringLiteral("ui_state"), hasRuntime ? conversationModeName(runtimeState.conversationMode)
+                                                        : conversationModeName(runtimeConversationModeForUi()));
+    state.insert(QStringLiteral("is_run"), runtimeBusyForUi());
     state.insert(QStringLiteral("snapshot"), buildControlSnapshot());
     return state;
 }
@@ -909,17 +935,22 @@ QJsonObject Widget::buildAcpBridgeState() const
 QJsonArray Widget::buildAcpBridgeModels() const
 {
     QJsonArray models;
-    if (ui_mode == LINK_MODE)
+    const RuntimeState runtimeState = runtimeStateSnapshotForSession();
+    const bool hasRuntime = runtimeState.initialized;
+    const bool linkMode = hasRuntime ? runtimeState.mode == RuntimeMode::Link : ui_mode == LINK_MODE;
+    const SETTINGS settings = hasRuntime ? runtimeState.settings : ui_SETTINGS;
+    const APIS stateApis = hasRuntime ? runtimeState.apis : apis;
+    if (linkMode)
     {
-        if (!apis.api_model.isEmpty())
+        if (!stateApis.api_model.isEmpty())
         {
             QJsonObject model;
-            model.insert(QStringLiteral("id"), apis.api_model);
+            model.insert(QStringLiteral("id"), stateApis.api_model);
             model.insert(QStringLiteral("object"), QStringLiteral("model"));
             model.insert(QStringLiteral("owned_by"), QStringLiteral("eva-bridge"));
             model.insert(QStringLiteral("current"), true);
             model.insert(QStringLiteral("source"), QStringLiteral("remote"));
-            model.insert(QStringLiteral("endpoint"), apis.api_endpoint);
+            model.insert(QStringLiteral("endpoint"), stateApis.api_endpoint);
             models.append(model);
         }
         return models;
@@ -935,9 +966,9 @@ QJsonArray Widget::buildAcpBridgeModels() const
             paths.append(QFileInfo(it.next()).absoluteFilePath());
         }
     }
-    if (!ui_SETTINGS.modelpath.isEmpty() && QFileInfo::exists(ui_SETTINGS.modelpath) && !paths.contains(ui_SETTINGS.modelpath))
+    if (!settings.modelpath.isEmpty() && QFileInfo::exists(settings.modelpath) && !paths.contains(settings.modelpath))
     {
-        paths.append(ui_SETTINGS.modelpath);
+        paths.append(settings.modelpath);
     }
     std::sort(paths.begin(), paths.end(), [](const QString &left, const QString &right)
     {
@@ -950,7 +981,7 @@ QJsonArray Widget::buildAcpBridgeModels() const
         model.insert(QStringLiteral("id"), info.fileName());
         model.insert(QStringLiteral("object"), QStringLiteral("model"));
         model.insert(QStringLiteral("owned_by"), QStringLiteral("eva-bridge"));
-        model.insert(QStringLiteral("current"), path == ui_SETTINGS.modelpath);
+        model.insert(QStringLiteral("current"), path == settings.modelpath);
         model.insert(QStringLiteral("source"), QStringLiteral("local"));
         model.insert(QStringLiteral("path"), path);
         models.append(model);
@@ -996,14 +1027,26 @@ bool Widget::applyAcpBridgeLoad(const QJsonObject &payload, QString *errorMessag
         if (ui_device_backend.isEmpty()) ui_device_backend = QStringLiteral("auto");
     }
     DeviceManager::setUserChoice(ui_device_backend);
-    ui_mode = LOCAL_MODE;
-    apis.is_local_backend = true;
     currentpath = historypath = modelPath;
     ui_SETTINGS.modelpath = modelPath;
-    current_api.clear();
-    backendOnline_ = false;
+    projectRuntimeLocalLoadingState();
     if (proxyServer_) proxyServer_->setBackendAvailable(false);
     slotCtxMax_ = 0;
+    if (runtime_)
+    {
+        RuntimeLoadLocalCommand command;
+        command.modelPath = ui_SETTINGS.modelpath;
+        command.mmprojPath = ui_SETTINGS.mmprojpath;
+        command.loraPath = ui_SETTINGS.lorapath;
+        command.backendChoice = ui_device_backend;
+        command.port = ui_port;
+        command.settings = ui_SETTINGS;
+        QString runtimeError;
+        if (!runtime_->loadLocal(command, &runtimeError))
+        {
+            qWarning().noquote() << QStringLiteral("EvaRuntime loadLocal failed:") << runtimeError;
+        }
+    }
     ui_state_loading();
     ensureLocalServer(false, true);
     return true;
@@ -1011,7 +1054,7 @@ bool Widget::applyAcpBridgeLoad(const QJsonObject &payload, QString *errorMessag
 
 bool Widget::resetAcpBridgeConversation(QString *errorMessage)
 {
-    if (is_run || turnActive_ || toolInvocationActive_)
+    if (runtimeBusyForUi())
     {
         if (errorMessage) *errorMessage = jtr("control command blocked");
         return false;
@@ -1023,7 +1066,7 @@ bool Widget::resetAcpBridgeConversation(QString *errorMessage)
 
 bool Widget::sendBridgeText(const QString &text, QString *errorMessage)
 {
-    if (is_run || turnActive_)
+    if (runtimeBusyForUi())
     {
         if (errorMessage) *errorMessage = jtr("control command blocked");
         return false;
@@ -1105,6 +1148,7 @@ void Widget::handleAcpBridgeCommand(const QJsonObject &payload)
         else
         {
             response.insert(QStringLiteral("error"), errorMessage);
+            response.insert(QStringLiteral("state"), buildAcpBridgeState());
         }
         sendAcpBridgeResponse(response);
         return;
@@ -1122,7 +1166,22 @@ void Widget::handleAcpBridgeCommand(const QJsonObject &payload)
         else
         {
             response.insert(QStringLiteral("error"), errorMessage);
+            response.insert(QStringLiteral("state"), buildAcpBridgeState());
         }
+        sendAcpBridgeResponse(response);
+        return;
+    }
+    if (name == QStringLiteral("bridge_stop"))
+    {
+        if (runtimeBusyForUi())
+        {
+            reflash_state(jtr("control stop"), SIGNAL_SIGNAL);
+            emit ui2net_stop(true);
+            emit ui2tool_cancelActive();
+        }
+        response.insert(QStringLiteral("ok"), true);
+        response.insert(QStringLiteral("accepted"), true);
+        response.insert(QStringLiteral("state"), buildAcpBridgeState());
         sendAcpBridgeResponse(response);
         return;
     }
@@ -1132,9 +1191,15 @@ void Widget::handleAcpBridgeCommand(const QJsonObject &payload)
         const bool ok = sendBridgeText(payload.value(QStringLiteral("text")).toString(), &errorMessage);
         response.insert(QStringLiteral("ok"), ok);
         if (ok)
+        {
             response.insert(QStringLiteral("accepted"), true);
+            response.insert(QStringLiteral("state"), buildAcpBridgeState());
+        }
         else
+        {
             response.insert(QStringLiteral("error"), errorMessage);
+            response.insert(QStringLiteral("state"), buildAcpBridgeState());
+        }
         sendAcpBridgeResponse(response);
         return;
     }
@@ -1195,24 +1260,37 @@ QJsonObject Widget::buildControlSnapshot() const
     if (ui && ui->output) snap.insert(QStringLiteral("output"), ui->output->toPlainText());
     if (ui && ui->state) snap.insert(QStringLiteral("state_log"), ui->state->toPlainText());
 
-    const int cap = resolvedContextLimitForUi();
+    const RuntimeState runtimeState = runtimeStateSnapshotForSession();
+    const bool hasRuntime = runtimeState.initialized;
+    const int cap = hasRuntime ? runtimeState.kvCapacity : resolvedContextLimitForUi();
     const bool capKnown = cap > 0;
-    int used = qMax(0, kvUsed_);
+    int used = qMax(0, hasRuntime ? runtimeState.kvUsed : kvUsed_);
     if (capKnown && used > cap) used = cap;
-    int percent = (capKnown && cap > 0) ? int(qRound(100.0 * double(used) / double(cap))) : 0;
+    int percent = hasRuntime ? runtimeState.kvPercent : ((capKnown && cap > 0) ? int(qRound(100.0 * double(used) / double(cap))) : 0);
     if (capKnown && used > 0 && percent == 0) percent = 1;
 
-    const QString modelLabel = resolvedModelLabelForUi();
+    const QString modelLabel = hasRuntime && !runtimeState.currentModel.isEmpty() ? runtimeState.currentModel : resolvedModelLabelForUi();
+    if (hasRuntime)
+        snap.insert(QStringLiteral("runtime_state"), runtimeStateToJson(runtimeState));
 
     snap.insert(QStringLiteral("kv_used"), used);
     snap.insert(QStringLiteral("kv_cap"), cap);
     snap.insert(QStringLiteral("kv_percent"), percent);
-    snap.insert(QStringLiteral("ui_state"), ui_state == CHAT_STATE ? QStringLiteral("chat") : QStringLiteral("complete"));
-    snap.insert(QStringLiteral("is_run"), is_run);
+    snap.insert(QStringLiteral("ui_state"), hasRuntime ? conversationModeName(runtimeState.conversationMode)
+                                                       : conversationModeName(runtimeConversationModeForUi()));
+    snap.insert(QStringLiteral("is_run"), runtimeBusyForUi());
+    const quint64 turnId = runtimeActiveTurnIdForUi();
+    snap.insert(QStringLiteral("turn_id"), static_cast<qint64>(turnId));
+    snap.insert(QStringLiteral("active_turn_id"), static_cast<qint64>(turnId));
+    snap.insert(QStringLiteral("phase"), hasRuntime ? runtimePhaseName(runtimeState.phase) : controlUiPhase_);
+    snap.insert(QStringLiteral("current_task"), hasRuntime ? runtimeState.currentTask : QString());
+    snap.insert(QStringLiteral("message_count"), hasRuntime ? runtimeState.messageCount : ui_messagesArray.size());
+    snap.insert(QStringLiteral("record_count"), recordEntries_.size());
     snap.insert(QStringLiteral("title"), windowTitle());
-    snap.insert(QStringLiteral("mode"), ui_mode == LINK_MODE ? QStringLiteral("link") : QStringLiteral("local"));
+    snap.insert(QStringLiteral("mode"), hasRuntime ? runtimeModeName(runtimeState.mode)
+                                                   : runtimeModeName(runtimeModeForUi()));
     snap.insert(QStringLiteral("model_name"), modelLabel);
-    snap.insert(QStringLiteral("endpoint"), current_api);
+    snap.insert(QStringLiteral("endpoint"), hasRuntime && !runtimeState.endpoint.isEmpty() ? runtimeState.endpoint : sessionEndpointForHistory());
     snap.insert(QStringLiteral("monitor"), buildControlMonitor());
     snap.insert(QStringLiteral("records"), buildControlRecords());
     return snap;
@@ -1267,8 +1345,12 @@ QJsonArray Widget::buildControlRecords() const
 void Widget::broadcastControlSnapshot()
 {
     if (!isHostControlled() && !acpBridgeConnected_) return;
+    const quint64 turnId = runtimeActiveTurnIdForUi();
     QJsonObject payload;
     payload.insert(QStringLiteral("type"), QStringLiteral("snapshot"));
+    payload.insert(QStringLiteral("event_seq"), static_cast<qint64>(++controlEventSeq_));
+    payload.insert(QStringLiteral("timestamp_ms"), static_cast<qint64>(QDateTime::currentMSecsSinceEpoch()));
+    payload.insert(QStringLiteral("turn_id"), static_cast<qint64>(turnId));
     payload.insert(QStringLiteral("snapshot"), buildControlSnapshot());
     sendToRemotePeers(payload);
     const int recordCount = recordEntries_.size();
@@ -1279,7 +1361,7 @@ void Widget::broadcastControlSnapshot()
                         .arg(recordCount)
                         .arg(outputLen)
                         .arg(stateLen),
-                    activeTurnId_);
+                    turnId);
 }
 
 void Widget::broadcastControlMonitor()
@@ -1287,6 +1369,9 @@ void Widget::broadcastControlMonitor()
     if (!isHostControlled() && !acpBridgeConnected_) return;
     QJsonObject payload;
     payload.insert(QStringLiteral("type"), QStringLiteral("monitor"));
+    payload.insert(QStringLiteral("event_seq"), static_cast<qint64>(++controlEventSeq_));
+    payload.insert(QStringLiteral("timestamp_ms"), static_cast<qint64>(QDateTime::currentMSecsSinceEpoch()));
+    payload.insert(QStringLiteral("turn_id"), static_cast<qint64>(runtimeActiveTurnIdForUi()));
     payload.insert(QStringLiteral("monitor"), buildControlMonitor());
     sendToRemotePeers(payload);
 }
@@ -1296,6 +1381,10 @@ void Widget::broadcastControlRecordClear()
     if (!isHostControlled() && !acpBridgeConnected_) return;
     QJsonObject payload;
     payload.insert(QStringLiteral("type"), QStringLiteral("record_clear"));
+    payload.insert(QStringLiteral("event_seq"), static_cast<qint64>(++controlEventSeq_));
+    payload.insert(QStringLiteral("timestamp_ms"), static_cast<qint64>(QDateTime::currentMSecsSinceEpoch()));
+    payload.insert(QStringLiteral("turn_id"), static_cast<qint64>(runtimeActiveTurnIdForUi()));
+    payload.insert(QStringLiteral("phase"), controlPhaseForUi());
     sendToRemotePeers(payload);
 }
 
@@ -1304,6 +1393,12 @@ void Widget::broadcastControlRecordAdd(RecordRole role, const QString &toolName)
     if (!isHostControlled() && !acpBridgeConnected_) return;
     QJsonObject payload;
     payload.insert(QStringLiteral("type"), QStringLiteral("record_add"));
+    payload.insert(QStringLiteral("event_seq"), static_cast<qint64>(++controlEventSeq_));
+    payload.insert(QStringLiteral("timestamp_ms"), static_cast<qint64>(QDateTime::currentMSecsSinceEpoch()));
+    payload.insert(QStringLiteral("turn_id"), static_cast<qint64>(runtimeActiveTurnIdForUi()));
+    payload.insert(QStringLiteral("phase"), controlPhaseForUi());
+    payload.insert(QStringLiteral("index"), qMax(0, recordEntries_.size() - 1));
+    payload.insert(QStringLiteral("record_count"), recordEntries_.size());
     payload.insert(QStringLiteral("role"), static_cast<int>(role));
     if (!toolName.isEmpty()) payload.insert(QStringLiteral("tool"), toolName);
     sendToRemotePeers(payload);
@@ -1314,8 +1409,21 @@ void Widget::broadcastControlRecordUpdate(int index, const QString &deltaText)
     if (!isHostControlled() && !acpBridgeConnected_) return;
     QJsonObject payload;
     payload.insert(QStringLiteral("type"), QStringLiteral("record_update"));
+    payload.insert(QStringLiteral("event_seq"), static_cast<qint64>(++controlEventSeq_));
+    payload.insert(QStringLiteral("timestamp_ms"), static_cast<qint64>(QDateTime::currentMSecsSinceEpoch()));
+    payload.insert(QStringLiteral("turn_id"), static_cast<qint64>(runtimeActiveTurnIdForUi()));
+    payload.insert(QStringLiteral("phase"), controlPhaseForUi());
     payload.insert(QStringLiteral("index"), index);
     payload.insert(QStringLiteral("delta"), deltaText);
+    if (index >= 0 && index < recordEntries_.size())
+    {
+        payload.insert(QStringLiteral("text"), recordEntries_[index].text);
+        payload.insert(QStringLiteral("role"), static_cast<int>(recordEntries_[index].role));
+        if (!recordEntries_[index].toolName.isEmpty())
+            payload.insert(QStringLiteral("tool"), recordEntries_[index].toolName);
+        if (recordEntries_[index].msgIndex >= 0)
+            payload.insert(QStringLiteral("msg_index"), recordEntries_[index].msgIndex);
+    }
     sendToRemotePeers(payload);
 }
 
@@ -1324,6 +1432,10 @@ void Widget::broadcastControlOutput(const QString &result, bool isStream, const 
     if (!isHostControlled() && !acpBridgeConnected_) return;
     QJsonObject payload;
     payload.insert(QStringLiteral("type"), QStringLiteral("output"));
+    payload.insert(QStringLiteral("event_seq"), static_cast<qint64>(++controlEventSeq_));
+    payload.insert(QStringLiteral("timestamp_ms"), static_cast<qint64>(QDateTime::currentMSecsSinceEpoch()));
+    payload.insert(QStringLiteral("turn_id"), static_cast<qint64>(runtimeActiveTurnIdForUi()));
+    payload.insert(QStringLiteral("phase"), controlPhaseForUi());
     payload.insert(QStringLiteral("text"), result);
     payload.insert(QStringLiteral("stream"), isStream);
     payload.insert(QStringLiteral("color"), color.name(QColor::HexArgb));
@@ -1336,7 +1448,7 @@ void Widget::broadcastControlOutput(const QString &result, bool isStream, const 
     //                     .arg(isStream ? QStringLiteral("yes") : QStringLiteral("no"))
     //                     .arg(thinkActiveFlag)
     //                     .arg(previewForLog(result)),
-    //                 activeTurnId_);
+    //                 runtimeActiveTurnIdForUi());
 }
 
 void Widget::broadcastControlState(const QString &stateString, SIGNAL_STATE level)
@@ -1344,6 +1456,10 @@ void Widget::broadcastControlState(const QString &stateString, SIGNAL_STATE leve
     if (!isHostControlled() && !acpBridgeConnected_) return;
     QJsonObject payload;
     payload.insert(QStringLiteral("type"), QStringLiteral("state_log"));
+    payload.insert(QStringLiteral("event_seq"), static_cast<qint64>(++controlEventSeq_));
+    payload.insert(QStringLiteral("timestamp_ms"), static_cast<qint64>(QDateTime::currentMSecsSinceEpoch()));
+    payload.insert(QStringLiteral("turn_id"), static_cast<qint64>(runtimeActiveTurnIdForUi()));
+    payload.insert(QStringLiteral("phase"), controlPhaseForUi());
     payload.insert(QStringLiteral("text"), stateString);
     payload.insert(QStringLiteral("level"), static_cast<int>(level));
     sendToRemotePeers(payload);
@@ -1378,6 +1494,9 @@ void Widget::broadcastControlKv(int used, int cap, int percent)
     if (!isHostControlled() && !acpBridgeConnected_) return;
     QJsonObject payload;
     payload.insert(QStringLiteral("type"), QStringLiteral("kv"));
+    payload.insert(QStringLiteral("event_seq"), static_cast<qint64>(++controlEventSeq_));
+    payload.insert(QStringLiteral("timestamp_ms"), static_cast<qint64>(QDateTime::currentMSecsSinceEpoch()));
+    payload.insert(QStringLiteral("turn_id"), static_cast<qint64>(runtimeActiveTurnIdForUi()));
     payload.insert(QStringLiteral("used"), used);
     payload.insert(QStringLiteral("cap"), cap);
     payload.insert(QStringLiteral("percent"), percent);
@@ -1386,12 +1505,17 @@ void Widget::broadcastControlKv(int used, int cap, int percent)
 
 void Widget::broadcastControlUiPhase(const QString &phase)
 {
+    controlUiPhase_ = phase;
     if (!isHostControlled() && !acpBridgeConnected_) return;
     QJsonObject payload;
     payload.insert(QStringLiteral("type"), QStringLiteral("ui_state"));
+    payload.insert(QStringLiteral("event_seq"), static_cast<qint64>(++controlEventSeq_));
+    payload.insert(QStringLiteral("timestamp_ms"), static_cast<qint64>(QDateTime::currentMSecsSinceEpoch()));
+    payload.insert(QStringLiteral("turn_id"), static_cast<qint64>(runtimeActiveTurnIdForUi()));
     payload.insert(QStringLiteral("phase"), phase);
-    payload.insert(QStringLiteral("is_run"), is_run);
-    payload.insert(QStringLiteral("state"), ui_state == CHAT_STATE ? QStringLiteral("chat") : QStringLiteral("complete"));
+    payload.insert(QStringLiteral("is_run"), runtimeBusyForUi());
+    payload.insert(QStringLiteral("state"), conversationModeName(runtimeConversationModeForUi()));
+    payload.insert(QStringLiteral("snapshot"), buildControlSnapshot());
     sendToRemotePeers(payload);
 }
 
@@ -1466,13 +1590,13 @@ void Widget::handleControlHostCommand(const QJsonObject &payload)
         controlHost_.active = true;
         controlHost_.peer = controlChannel_ ? controlChannel_->hostPeer() : QString();
         reflash_state(jtr("control connected").arg(controlHost_.peer), SIGNAL_SIGNAL);
-        const QString modeLabel = (ui_mode == LINK_MODE) ? QStringLiteral("链接") : QStringLiteral("本地");
-        const QString stateLabel = (ui_state == CHAT_STATE) ? QStringLiteral("对话") : QStringLiteral("补完");
-        const QString runLabel = is_run ? QStringLiteral("推理中") : QStringLiteral("空闲");
+        const QString modeLabel = runtimeModeForUi() == RuntimeMode::Link ? QStringLiteral("链接") : QStringLiteral("本地");
+        const QString stateLabel = runtimeConversationModeForUi() == ConversationMode::Chat ? QStringLiteral("对话") : QStringLiteral("补完");
+        const QString runLabel = runtimeBusyForUi() ? QStringLiteral("推理中") : QStringLiteral("空闲");
         const QString modelLabel = resolvedModelLabelForUi();
         const int cap = resolvedContextLimitForUi();
         const bool capKnown = cap > 0;
-        int used = qMax(0, kvUsed_);
+        int used = qMax(0, runtimeKvUsedForUi());
         if (capKnown && cap > 0 && used > cap) used = cap;
         const int percent = (capKnown && cap > 0) ? int(qRound(100.0 * double(used) / double(cap))) : 0;
         const QString capLabel = resolvedContextLabelForUi();
@@ -1486,7 +1610,8 @@ void Widget::handleControlHostCommand(const QJsonObject &payload)
                                .arg(used)
                                .arg(capLabel)
                                .arg(percentLabel);
-        if (!current_api.isEmpty()) infoLine += QStringLiteral(" | 端点:") + current_api;
+        const QString endpoint = sessionEndpointForHistory();
+        if (!endpoint.isEmpty()) infoLine += QStringLiteral(" | 端点:") + endpoint;
         appendControlStateLog(infoLine, SIGNAL_SIGNAL, jtr("control peer prefix"), true);
         QJsonObject ack;
         ack.insert(QStringLiteral("type"), QStringLiteral("hello_ack"));
@@ -1509,7 +1634,7 @@ void Widget::handleControlHostCommand(const QJsonObject &payload)
     }
     if (name == QStringLiteral("stop"))
     {
-        if (is_run || turnActive_ || toolInvocationActive_)
+        if (runtimeBusyForUi())
         {
             reflash_state(jtr("control stop"), SIGNAL_SIGNAL);
             emit ui2net_stop(true);
@@ -1604,7 +1729,7 @@ void Widget::handleControlControllerEvent(const QJsonObject &payload)
                             .arg(stream ? QStringLiteral("yes") : QStringLiteral("no"))
                             .arg(thinkFlag)
                             .arg(previewForLog(text)),
-                        activeTurnId_);
+                        runtimeActiveTurnIdForUi());
         // Mirror host output verbatim to avoid re-parsing <think> on controller side
         if (stream) flushPendingStream();
         QString plain = text;
@@ -1794,7 +1919,7 @@ void Widget::applyControlSnapshot(const QJsonObject &snap)
                         .arg(recs.size())
                         .arg(renderedFromRecords ? 1 : 0)
                         .arg((ui && ui->output) ? ui->output->toPlainText().size() : 0),
-                    activeTurnId_);
+                    runtimeActiveTurnIdForUi());
     const QString stateStr = snap.value(QStringLiteral("ui_state")).toString();
     controlClient_.remoteUiState = (stateStr == QStringLiteral("complete")) ? COMPLETE_STATE : CHAT_STATE;
     controlClient_.remoteRunning = snap.value(QStringLiteral("is_run")).toBool(false);
@@ -1884,9 +2009,9 @@ void Widget::beginControlLink()
     controlTargetHost_ = host;
     controlTargetPort_ = static_cast<quint16>(port);
     controlToken_ = control_token_LineEdit ? control_token_LineEdit->text() : QString();
-    ui_mode = LINK_MODE;
+    projectRuntimeControlLinkState();
     controlClient_.remoteRunning = false;
-    controlClient_.remoteUiState = ui_state;
+    controlClient_.remoteUiState = runtimeConversationModeForUi() == ConversationMode::Complete ? COMPLETE_STATE : CHAT_STATE;
     controlAwaitingHello_ = true;
     if (controlChannel_) controlChannel_->connectToHost(controlTargetHost_, controlTargetPort_);
     reflash_state(jtr("control connect").arg(QStringLiteral("%1:%2").arg(controlTargetHost_).arg(controlTargetPort_)), SIGNAL_SIGNAL);

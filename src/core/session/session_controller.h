@@ -1,19 +1,21 @@
 ﻿#pragma once
 
 #include <QObject>
+#include <QJsonArray>
+#include <QJsonObject>
 #include <QString>
 
+#include "core/session/session_host_port.h"
 #include "core/session/session_types.h"
+#include "runtime/runtime_state.h"
 #include "xconfig.h"
-
-class Widget;
 
 // 会话控制器：负责会话编排、消息组织、压缩与发送流程。
 class SessionController : public QObject
 {
     Q_OBJECT
 public:
-    explicit SessionController(Widget *owner);
+    explicit SessionController(QObject *owner);
     
     // 会话与请求构建
     ENDPOINT_DATA prepareEndpointData();
@@ -46,5 +48,28 @@ public:
     void resumeSendAfterCompaction();
 
 private:
-    Widget *w_ = nullptr; // 不拥有，仅用于访问 UI 与状态
+    struct PendingToolState
+    {
+        QString result;
+        QString pendingName;
+        QString callId;
+        QString lastName;
+
+        bool hasResult() const { return !result.isEmpty(); }
+        QString effectiveName() const { return pendingName.isEmpty() ? lastName : pendingName; }
+    };
+
+    SessionHostPort *hostPort() const;
+    SessionFrontendPort *frontendPort() const;
+    RuntimeState runtimeState() const;
+    PendingToolState pendingToolState() const;
+    void clearPendingToolResult();
+    COMPACTION_SETTINGS compactionSettings() const;
+    QJsonArray sessionMessages() const;
+    int appendConversationMessage(const QJsonObject &message, bool persistHistory = true);
+    void replaceConversationMessages(const QJsonArray &messages, bool rewriteHistory = false);
+    void replaceConversationMessage(int index, const QJsonObject &message);
+    void syncRuntimeSessionState() const;
+
+    SessionHostPort *host_ = nullptr; // 不拥有，会话宿主适配端口
 };

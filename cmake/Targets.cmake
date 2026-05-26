@@ -28,15 +28,19 @@ add_executable(
     src/app/default_model_finder.h
     src/core/session/session_controller.cpp
     src/core/session/session_controller.h
+    src/core/session/session_frontend_port.h
+    src/core/session/session_host_port.h
     src/core/session/session_types.h
     src/core/toolflow/tool_flow_controller.cpp
     src/core/toolflow/tool_flow_controller.h
+    src/core/toolflow/tool_flow_host_port.h
     src/runtime/eva_runtime.cpp
     src/runtime/eva_runtime.h
     src/runtime/runtime_bootstrap.cpp
     src/runtime/runtime_bootstrap.h
     src/runtime/runtime_commands.h
     src/runtime/runtime_events.h
+    src/runtime/runtime_network_driver.h
     src/runtime/runtime_state.h
     src/runtime/runtime_worker_host.cpp
     src/runtime/runtime_worker_host.h
@@ -54,6 +58,7 @@ add_executable(
     src/widget/widget_session.cpp
     src/widget/widget_toolflow.cpp
     src/widget/widget_records.cpp
+    src/widget/widget_runtime.cpp
     src/widget/widget_skills.cpp
     src/widget/widget_engineer.cpp
     src/widget/widget_media.cpp
@@ -173,9 +178,13 @@ add_executable(
     src/runtime/runtime_bootstrap.h
     src/runtime/runtime_commands.h
     src/runtime/runtime_events.h
+    src/runtime/runtime_network_driver.h
     src/runtime/runtime_state.h
     src/runtime/runtime_worker_host.cpp
     src/runtime/runtime_worker_host.h
+    src/service/net/net_client.cpp
+    src/service/net/net_client.h
+    src/service/net/request_snapshot.h
     src/service/backend/xbackend.cpp
     src/service/backend/xbackend.h
     src/service/backend/xbackend_args.cpp
@@ -189,7 +198,11 @@ add_executable(
     src/utils/startuplogger.cpp
     src/utils/startuplogger.h
     src/utils/flowtracer.cpp
-    src/utils/flowtracer.h)
+    src/utils/flowtracer.h
+    src/prompt_builder.cpp
+    src/prompt_builder.h
+    src/xnet.cpp
+    src/xnet.h)
 
 target_link_libraries(eva_acp PRIVATE Qt5::Core Qt5::Network Qt5::Gui)
 target_compile_features(eva_acp PRIVATE cxx_std_17)
@@ -254,10 +267,6 @@ if (TARGET backends)
 endif()
 
 message(STATUS "eva型号: ${eva_OUTPUT_NAME}")
-
-
-
-
 
 
 

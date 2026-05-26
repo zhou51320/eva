@@ -671,7 +671,7 @@ Widget::ControllerFrame Widget::captureControllerFrame()
         };
 
         // turnId 守护：截图等待过程中允许用户点击“重置”，此时应立即放弃截图并返回。
-        const quint64 guardTurnId = activeTurnId_;
+        const quint64 guardTurnId = runtimeActiveTurnIdForUi();
 
         // 截图放到工作线程里做，并设置超时，避免极端情况下截图调用卡死 UI。
         // 注意：这里用“等待 + 事件循环”的方式让 UI 仍可响应（例如用户点击重置）。
@@ -691,7 +691,7 @@ Widget::ControllerFrame Widget::captureControllerFrame()
         QObject::connect(&watcher, &QFutureWatcher<WinCaptureResult>::finished, &loop, &QEventLoop::quit);
         QObject::connect(&timeout, &QTimer::timeout, &loop, &QEventLoop::quit);
         QObject::connect(&turnGuard, &QTimer::timeout, &loop, [this, guardTurnId, &loop]() {
-            if (guardTurnId == 0 || activeTurnId_ != guardTurnId)
+            if (guardTurnId == 0 || runtimeActiveTurnIdForUi() != guardTurnId)
             {
                 loop.quit();
             }
@@ -702,7 +702,7 @@ Widget::ControllerFrame Widget::captureControllerFrame()
         loop.exec();
         turnGuard.stop();
 
-        if (guardTurnId == 0 || activeTurnId_ != guardTurnId)
+        if (guardTurnId == 0 || runtimeActiveTurnIdForUi() != guardTurnId)
         {
             // 用户在等待截图时触发了 reset：放弃截图，直接返回空 frame。
             return frame;

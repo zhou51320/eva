@@ -1,6 +1,7 @@
 ﻿#include "widget.h"
 #include "ui_widget.h"
 #include "core/toolflow/tool_flow_controller.h"
+#include "runtime/eva_runtime.h"
 #include "terminal_pane.h"
 #include "../utils/startuplogger.h"
 #include "../utils/flowtracer.h"
@@ -27,13 +28,12 @@ void Widget::recv_tool_calls(const QString &payload)
 void Widget::normal_finish_pushover()
 {
     finishTurnPerfSample(QStringLiteral("net_finish"), true);
+    const bool hadActiveTurn = runtimeTurnActiveForUi() || runtimeActiveTurnIdForUi() != 0;
     turnThinkActive_ = false;
     pendingAssistantHeaderReset_ = false;
     // Reset per-turn header flags
-    turnActive_ = false;
-    is_run = false;
-    ui_state_normal(); // 待机界面状态
-    if (ui_mode == LINK_MODE)
+    projectRuntimeIdleState(false); // 待机界面状态
+    if (runtimeModeForUi() == RuntimeMode::Link)
     {
         kvTokensTurn_ = kvPromptTokensTurn_ + qMax(0, kvStreamedTurn_);
         // 调试：LINK 模式下 reasoning tokens（思考 token）也计入本轮 KV 占用，便于观察真实推理负载。
@@ -49,7 +49,7 @@ void Widget::normal_finish_pushover()
                     .arg(kvTokensTurn_)
                     .arg(kvPromptTokensTurn_)
                     .arg(kvUsedBeforeTurn_),
-                activeTurnId_);
+                runtimeActiveTurnIdForUi());
         }
         // reflash_state(QStringLiteral("link:turn complete prompt=%1 stream=%2 turn=%3 used=%4 used_before=%5")
         //                   .arg(kvPromptTokensTurn_)
@@ -71,6 +71,14 @@ void Widget::normal_finish_pushover()
     }
     // 推理完成后尝试派发定时任务
     tryDispatchScheduledJobs();
+    if (hadActiveTurn)
+    {
+        finishTurnFlow(QStringLiteral("model reply finished"), true);
+    }
+    else
+    {
+        syncRuntimeSessionMirror(false);
+    }
 }
 
 void Widget::recv_toolpushover(QString tool_result_)
@@ -157,7 +165,7 @@ void Widget::recv_stopover()
 {
     finishTurnPerfSample(QStringLiteral("net_stopover"), false);
     flushPendingStream();
-    if (ui_state == COMPLETE_STATE)
+    if (runtimeConversationModeForUi() == ConversationMode::Complete)
     {
         ui->reset->click();
     } // 补完模式终止后需要重置
@@ -165,7 +173,7 @@ void Widget::recv_stopover()
 
 void Widget::recv_resetover()
 {
-    if (ui_SETTINGS.ngl == 0)
+    if (sessionSettingsSnapshot().ngl == 0)
     {
         setBaseWindowIcon(QIcon(":/logo/eva.png"));
     } // 恢复图标
@@ -186,7 +194,7 @@ void Widget::recv_datereset()
     // 打印约定中的系统指令
     ui_state_info = "-----------" + jtr("date") + "-----------";
     reflash_state(ui_state_info, USUAL_SIGNAL);
-    if (ui_state == COMPLETE_STATE)
+    if (runtimeConversationModeForUi() == ConversationMode::Complete)
     {
         reflash_state("- " + jtr("complete mode") + jtr("on") + " ", USUAL_SIGNAL);
     }
@@ -211,32 +219,34 @@ void Widget::recv_datereset()
 
 void Widget::recv_setreset()
 {
+    const SETTINGS settings = sessionSettingsSnapshot();
+    const ConversationMode conversation = runtimeConversationModeForUi();
     // 打印设置内容
     reflash_state("-----------" + jtr("set") + "-----------", USUAL_SIGNAL);
 
-    reflash_state("- " + jtr("temperature") + " " + QString::number(ui_SETTINGS.temp), USUAL_SIGNAL);
-    reflash_state("- " + jtr("repeat") + " " + QString::number(ui_SETTINGS.repeat), USUAL_SIGNAL);
-    const QString npredictText = (ui_SETTINGS.hid_npredict <= 0) ? QStringLiteral("auto")
-                                                                 : QString::number(ui_SETTINGS.hid_npredict);
+    reflash_state("- " + jtr("temperature") + " " + QString::number(settings.temp), USUAL_SIGNAL);
+    reflash_state("- " + jtr("repeat") + " " + QString::number(settings.repeat), USUAL_SIGNAL);
+    const QString npredictText = (settings.hid_npredict <= 0) ? QStringLiteral("auto")
+                                                              : QString::number(settings.hid_npredict);
     reflash_state("- " + jtr("npredict") + " " + npredictText, USUAL_SIGNAL);
-    reflash_state("- gpu " + jtr("offload") + " " + QString::number(ui_SETTINGS.ngl), USUAL_SIGNAL);
-    reflash_state("- cpu" + jtr("thread") + " " + QString::number(ui_SETTINGS.nthread), USUAL_SIGNAL);
-    reflash_state("- " + jtr("ctx") + jtr("length") + " " + QString::number(ui_SETTINGS.nctx), USUAL_SIGNAL);
-    reflash_state("- " + jtr("batch size") + " " + QString::number(ui_SETTINGS.hid_batch), USUAL_SIGNAL);
+    reflash_state("- gpu " + jtr("offload") + " " + QString::number(settings.ngl), USUAL_SIGNAL);
+    reflash_state("- cpu" + jtr("thread") + " " + QString::number(settings.nthread), USUAL_SIGNAL);
+    reflash_state("- " + jtr("ctx") + jtr("length") + " " + QString::number(settings.nctx), USUAL_SIGNAL);
+    reflash_state("- " + jtr("batch size") + " " + QString::number(settings.hid_batch), USUAL_SIGNAL);
 
-    if (ui_SETTINGS.lorapath != "")
+    if (settings.lorapath != "")
     {
-        reflash_state("ui:" + jtr("load lora") + " " + ui_SETTINGS.lorapath, USUAL_SIGNAL);
+        reflash_state("ui:" + jtr("load lora") + " " + settings.lorapath, USUAL_SIGNAL);
     }
-    if (ui_SETTINGS.mmprojpath != "")
+    if (settings.mmprojpath != "")
     {
-        reflash_state("ui:" + jtr("load mmproj") + " " + ui_SETTINGS.mmprojpath, USUAL_SIGNAL);
+        reflash_state("ui:" + jtr("load mmproj") + " " + settings.mmprojpath, USUAL_SIGNAL);
     }
-    if (ui_state == CHAT_STATE)
+    if (conversation == ConversationMode::Chat)
     {
         reflash_state("- " + jtr("chat mode"), USUAL_SIGNAL);
     }
-    else if (ui_state == COMPLETE_STATE)
+    else if (conversation == ConversationMode::Complete)
     {
         reflash_state("- " + jtr("complete mode"), USUAL_SIGNAL);
     }
@@ -281,20 +291,22 @@ void Widget::on_reset_clicked()
     {
         cancelEngineerProxy(QStringLiteral("reset"));
         engineerProxyOuterActive_ = false;
-        toolInvocationActive_ = false;
     }
-    if (toolInvocationActive_)
+    if (runtimeToolActiveForUi())
     {
+        const bool hadActiveTurn = runtimeTurnActiveForUi() || runtimeActiveTurnIdForUi() != 0;
         emit ui2tool_cancelActive();
         // 重要：取消工具时也要立即终止文转声，否则可能出现“对话已重置但仍在朗读/播放”的体验问题
         emit ui2expend_resettts();
-        toolInvocationActive_ = false;
+        setToolFlowInvocationActive(false);
         tool_result.clear();
-        turnActive_ = false;
-        is_run = false;
         decode_finish();
-        ui_state_normal();
+        projectRuntimeIdleState(false);
         finishTurnPerfSample(QStringLiteral("user_reset_tool"), false);
+        if (hadActiveTurn)
+            finishTurnFlow(QStringLiteral("tool cancelled"), false);
+        else
+            syncRuntimeSessionMirror(true);
         reflash_state("ui:tool cancelled", SIGNAL_SIGNAL);
         return;
     }
@@ -303,8 +315,11 @@ void Widget::on_reset_clicked()
     wait_to_show_images_filepath.clear(); // 清空待显示图片
     emit ui2expend_resettts();            // 清空待读队列
     tool_result = "";                     // 清空工具结果
+    const bool busyBeforeReset = runtimeBusyForUi();
+    if (!busyBeforeReset)
+        syncRuntimeSessionMirror(true);
     // 如果模型正在推理就改为停止流程
-    if (is_run)
+    if (busyBeforeReset)
     {
         reflash_state("ui:" + jtr("clicked") + jtr("shut down"), SIGNAL_SIGNAL);
         finishTurnPerfSample(QStringLiteral("user_stop"), false);
@@ -349,8 +364,7 @@ void Widget::on_reset_clicked()
     kvUsed_ = 0;
     kvUsedBeforeTurn_ = 0;
     kvStreamedTurn_ = 0;
-    turnActive_ = false;
-    activeTurnId_ = 0;
+    projectRuntimeIdleState(true);
     nextTurnId_ = 1;
     engineerProxyRuntime_.active = false; // reset engineer proxy session
     emit ui2tool_turn(0);
@@ -360,8 +374,7 @@ void Widget::on_reset_clicked()
     // resources/undo stack without risking double-deletes.
     // Note: QTextEdit takes ownership of the previous document and will
     // delete it; do not manually delete the old one here.
-    if (ui_state == CHAT_STATE) resetOutputDocument();
-    ui_state_normal();
+    if (runtimeConversationModeForUi() == ConversationMode::Chat) resetOutputDocument();
     recordClear(); // 待机界面状态
 
     // 请求式统一处理（本地/远端）
@@ -396,24 +409,35 @@ void Widget::on_reset_clicked()
     // Do not record reset into history; clear current session only
     if (history_) history_->clearCurrent();
 
-    if (ui_mode == LINK_MODE)
+    if (runtime_)
+    {
+        RuntimeResetCommand command;
+        command.clearHistory = true;
+        QString runtimeError;
+        if (!runtime_->resetConversation(command, &runtimeError))
+        {
+            qWarning().noquote() << QStringLiteral("EvaRuntime resetConversation failed:") << runtimeError;
+        }
+        syncRuntimeSessionMirror(true);
+    }
+
+    if (runtimeModeForUi() == RuntimeMode::Link)
     {
         // 远端模式：显示当前端点
-        current_api = (ui_state == CHAT_STATE) ? (apis.api_endpoint + apis.api_chat_endpoint)
-                                               : (apis.api_endpoint + apis.api_completion_endpoint);
+        projectRuntimeLinkReadyState(sessionApisSnapshot());
         setBaseWindowIcon(QIcon(":/logo/eva.png"));
-        EVA_title = jtr("current api") + " " + current_api;
+        EVA_title = jtr("current api") + " " + sessionEndpointForHistory();
         reflash_state(QString("ui:") + EVA_title, USUAL_SIGNAL);
         this->setWindowTitle(EVA_title);
         trayIcon->setToolTip(EVA_title);
     }
     else // LOCAL_MODE：显示当前模型，保持本地装载表现
     {
-        QString modelName = ui_SETTINGS.modelpath.split("/").last();
+        QString modelName = resolvedModelLabelForUi();
         EVA_title = jtr("current model") + " " + modelName;
         this->setWindowTitle(EVA_title);
         trayIcon->setToolTip(EVA_title);
-        if (ui_SETTINGS.ngl == 0)
+        if (sessionSettingsSnapshot().ngl == 0)
         {
             setBaseWindowIcon(QIcon(":/logo/eva.png"));
         }

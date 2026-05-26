@@ -3,7 +3,7 @@
 #include "xnet.h"
 
 NetClient::NetClient(QObject *parent)
-    : QObject(parent)
+    : RuntimeNetworkDriver(parent)
 {
 }
 

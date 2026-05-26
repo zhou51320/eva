@@ -1,5 +1,6 @@
 #include "widget.h"
 #include "ui_widget.h"
+#include "runtime/eva_runtime.h"
 #include <QDate>
 #include <QDateTime>
 #include <QDebug>
@@ -596,9 +597,9 @@ void Widget::startEngineerProxyTool(const mcp::json &call)
 
     if (!isArchitectModeActive())
     {
-        toolInvocationActive_ = false;
         engineerProxyOuterActive_ = false;
         tool_result = QStringLiteral("system_engineer_proxy 未启用。");
+        setToolFlowInvocationActive(false);
         ENDPOINT_DATA data = prepareEndpointData();
         currentTask_ = ConversationTask::ToolLoop;
         handleToolLoop(data);
@@ -606,8 +607,8 @@ void Widget::startEngineerProxyTool(const mcp::json &call)
     }
     if (engineerProxyOuterActive_)
     {
-        toolInvocationActive_ = false;
         tool_result = QStringLiteral("已有系统工程师任务在执行，请稍候。");
+        setToolFlowInvocationActive(false);
         ENDPOINT_DATA data = prepareEndpointData();
         currentTask_ = ConversationTask::ToolLoop;
         handleToolLoop(data);
@@ -622,8 +623,8 @@ void Widget::startEngineerProxyTool(const mcp::json &call)
     task = task.trimmed();
     if (task.isEmpty())
     {
-        toolInvocationActive_ = false;
         tool_result = QStringLiteral("system_engineer_proxy 任务描述为空，无法执行。");
+        setToolFlowInvocationActive(false);
         ENDPOINT_DATA data = prepareEndpointData();
         currentTask_ = ConversationTask::ToolLoop;
         handleToolLoop(data);
@@ -646,7 +647,7 @@ void Widget::startEngineerProxyTool(const mcp::json &call)
     engineerProxyRuntime_.lastGeneratedTokens = 0;
     engineerProxyRuntime_.lastReasoningTokens = 0;
     engineerProxyOuterActive_ = true;
-    toolInvocationActive_ = true;
+    setToolFlowInvocationActive(true);
     resetEngineerConsole();
     resetEngineerStreamState();
     const QString systemPrompt = create_engineer_proxy_prompt();
@@ -775,8 +776,8 @@ void Widget::handleEngineerToolResult(const QString &result)
     toolMsg.insert(QStringLiteral("role"), QStringLiteral("tool"));
     toolMsg.insert(QStringLiteral("content"), result);
     engineerProxyRuntime_.session->messages.append(toolMsg);
+    setToolFlowInvocationActive(true);
     sendEngineerProxyRequest(QStringLiteral("tool response"));
-    toolInvocationActive_ = true;
 }
 
 void Widget::finalizeEngineerProxy(const QString &assistantText)
@@ -785,7 +786,7 @@ void Widget::finalizeEngineerProxy(const QString &assistantText)
     {
         engineerProxyRuntime_.active = false;
         engineerProxyOuterActive_ = false;
-        toolInvocationActive_ = false;
+        setToolFlowInvocationActive(false);
         return;
     }
     // 若最终回复未在窗口中打出“模型”标题，则在收尾前补齐
@@ -819,13 +820,13 @@ void Widget::finalizeEngineerProxy(const QString &assistantText)
     engineerProxyRuntime_.active = false;
     engineerProxyRuntime_.waitingToolResult = false;
     engineerProxyOuterActive_ = false;
-    toolInvocationActive_ = false;
     engineerProxyRuntime_.engineerId.clear();
     engineerProxyRuntime_.task.clear();
     engineerProxyRuntime_.lastPromptTokens = 0;
     engineerProxyRuntime_.lastGeneratedTokens = 0;
     engineerProxyRuntime_.lastReasoningTokens = 0;
     tool_result = response;
+    setToolFlowInvocationActive(false);
     ENDPOINT_DATA data = prepareEndpointData();
     currentTask_ = ConversationTask::ToolLoop;
     handleToolLoop(data);
@@ -842,7 +843,7 @@ void Widget::cancelEngineerProxy(const QString &reason)
     engineerProxyRuntime_.task.clear();
     appendEngineerConsole(QStringLiteral("系统架构师取消：%1").arg(reason), false);
     emit ui2net_stop(true);
-    toolInvocationActive_ = false;
+    setToolFlowInvocationActive(false);
 }
 
 QString Widget::formatEngineerProxyResult(const QSharedPointer<EngineerSession> &session, const QString &assistantText)
@@ -902,6 +903,7 @@ void Widget::refreshEngineerPromptBlock()
     {
         history_->rewriteAllMessages(ui_messagesArray);
     }
+    syncRuntimeSessionMirror(true);
     if (lastSystemRecordIndex_ >= 0)
     {
         updateRecordEntryContent(lastSystemRecordIndex_, ui_DATES.date_prompt);

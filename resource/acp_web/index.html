@@ -13,16 +13,16 @@
         <div class="brand-mark">E</div>
         <div>
           <div class="brand-title">EVA Workspace</div>
-          <div class="brand-subtitle">ACP bridge console</div>
+          <div id="brand-subtitle" class="brand-subtitle">ACP runtime console</div>
         </div>
       </div>
 
-      <div class="workspace-badge">
+      <div id="source-badge" class="workspace-badge">
         <div class="workspace-badge-top">
           <span class="workspace-dot"></span>
           <strong>eva</strong>
         </div>
-        <span>通过 EVA 主程序桥接运行</span>
+        <span id="source-badge-text">等待运行层状态</span>
       </div>
 
       <div class="sidebar-toolbar">
@@ -83,7 +83,7 @@
         <div class="context-left">
           <div class="headline-block">
             <h1 class="headline">会话工作台</h1>
-            <p class="headline-sub">统一查看当前会话、模型与运行时状态，并通过 EVA 主程序桥接执行实际装载与对话。</p>
+            <p id="runtime-summary" class="headline-sub">统一查看当前会话、模型与运行时状态，并通过 EVA 无窗口运行层执行装载与对话。</p>
           </div>
           <section class="hero-strip">
             <div class="hero-cell">
@@ -127,6 +127,7 @@
                   <input id="stream-toggle" type="checkbox" checked>
                   <span>流式输出</span>
                 </label>
+                <button id="stop-chat" class="ghost-btn" type="button" disabled>停止</button>
                 <button id="send-chat" class="primary-btn">发送</button>
               </div>
             </div>

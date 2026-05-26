@@ -38,6 +38,7 @@ QByteArray reasonPhrase(int statusCode, const QByteArray &fallback)
     case 403: return QByteArrayLiteral("Forbidden");
     case 404: return QByteArrayLiteral("Not Found");
     case 405: return QByteArrayLiteral("Method Not Allowed");
+    case 409: return QByteArrayLiteral("Conflict");
     case 429: return QByteArrayLiteral("Too Many Requests");
     case 500: return QByteArrayLiteral("Internal Server Error");
     case 502: return QByteArrayLiteral("Bad Gateway");
@@ -211,14 +212,44 @@ void AcpHttpServer::handleRequest(QTcpSocket *socket,
         if (!runtime_->resetConversation(&errorMessage))
         {
             QJsonObject payload;
+            payload.insert(QStringLiteral("ok"), false);
+            payload.insert(QStringLiteral("accepted"), false);
             payload.insert(QStringLiteral("error"), errorMessage);
+            payload.insert(QStringLiteral("state"), runtime_->backendStatePayload());
+            const QString normalizedError = errorMessage.toLower();
+            const bool busy = normalizedError.contains(QStringLiteral("busy")) ||
+                              normalizedError.contains(QStringLiteral("blocked")) ||
+                              normalizedError.contains(QStringLiteral("推理")) ||
+                              normalizedError.contains(QStringLiteral("占用"));
+            writeJson(socket, busy ? 409 : 400, busy ? QByteArrayLiteral("Conflict") : QByteArrayLiteral("Bad Request"), payload);
+            return;
+        }
+        QJsonObject payload;
+        payload.insert(QStringLiteral("ok"), true);
+        payload.insert(QStringLiteral("accepted"), true);
+        payload.insert(QStringLiteral("state"), runtime_->backendStatePayload());
+        writeJson(socket, 200, QByteArrayLiteral("OK"), payload);
+        return;
+    }
+
+    if (method == QByteArrayLiteral("POST") && path == QStringLiteral("/api/runtime/stop"))
+    {
+        QString errorMessage;
+        if (!runtime_->stopRuntime(&errorMessage))
+        {
+            QJsonObject payload;
+            payload.insert(QStringLiteral("ok"), false);
+            payload.insert(QStringLiteral("accepted"), false);
+            payload.insert(QStringLiteral("error"), errorMessage);
+            payload.insert(QStringLiteral("state"), runtime_->backendStatePayload());
             writeJson(socket, 400, QByteArrayLiteral("Bad Request"), payload);
             return;
         }
         QJsonObject payload;
         payload.insert(QStringLiteral("ok"), true);
+        payload.insert(QStringLiteral("accepted"), true);
         payload.insert(QStringLiteral("state"), runtime_->backendStatePayload());
-        writeJson(socket, 200, QByteArrayLiteral("OK"), payload);
+        writeJson(socket, 202, QByteArrayLiteral("Accepted"), payload);
         return;
     }
 
@@ -255,7 +286,7 @@ void AcpHttpServer::handleRequest(QTcpSocket *socket,
         return;
     }
 
-    if (path == QStringLiteral("/api/backend/load") || path == QStringLiteral("/api/runtime/reset") || path == QStringLiteral("/v1/chat/completions") || path == QStringLiteral("/v1/models"))
+    if (path == QStringLiteral("/api/backend/load") || path == QStringLiteral("/api/runtime/reset") || path == QStringLiteral("/api/runtime/stop") || path == QStringLiteral("/v1/chat/completions") || path == QStringLiteral("/v1/models"))
     {
         QJsonObject payload;
         payload.insert(QStringLiteral("error"), QStringLiteral("Method not allowed"));
@@ -389,8 +420,9 @@ void AcpHttpServer::proxyChatCompletions(QTcpSocket *socket,
     }
     const bool streaming = requestObject.value(QStringLiteral("stream")).toBool(false);
 
-    if (runtime_->bridgeModeEnabled())
+    if (runtime_->directRuntimeEnabled() || runtime_->bridgeModeEnabled())
     {
+        const bool directRuntime = runtime_->directRuntimeEnabled();
         QString errorMessage;
         if (!streaming)
         {
@@ -398,7 +430,7 @@ void AcpHttpServer::proxyChatCompletions(QTcpSocket *socket,
             if (response.isEmpty())
             {
                 QJsonObject payload;
-                payload.insert(QStringLiteral("error"), errorMessage.isEmpty() ? QStringLiteral("Bridge chat failed.") : errorMessage);
+                payload.insert(QStringLiteral("error"), errorMessage.isEmpty() ? QStringLiteral("Runtime chat failed.") : errorMessage);
                 writeJson(socket, 502, QByteArrayLiteral("Bad Gateway"), payload);
                 return;
             }
@@ -409,7 +441,7 @@ void AcpHttpServer::proxyChatCompletions(QTcpSocket *socket,
         writeStreamHeaders(socket, 200, QByteArrayLiteral("OK"), QByteArrayLiteral("text/event-stream; charset=utf-8"));
         const QJsonObject response = runtime_->streamChatCompletion(
             requestObject,
-            [socket](const QString &role, const QString &chunkText)
+            [socket, directRuntime](const QString &role, const QString &chunkText)
             {
                 if (!socket || chunkText.isEmpty()) return;
                 QJsonObject delta;
@@ -424,10 +456,10 @@ void AcpHttpServer::proxyChatCompletions(QTcpSocket *socket,
                 QJsonArray choices;
                 choices.append(choice);
                 QJsonObject chunk;
-                chunk.insert(QStringLiteral("id"), QStringLiteral("chatcmpl-bridge"));
+                chunk.insert(QStringLiteral("id"), directRuntime ? QStringLiteral("chatcmpl-runtime") : QStringLiteral("chatcmpl-bridge"));
                 chunk.insert(QStringLiteral("object"), QStringLiteral("chat.completion.chunk"));
                 chunk.insert(QStringLiteral("created"), static_cast<qint64>(QDateTime::currentSecsSinceEpoch()));
-                chunk.insert(QStringLiteral("model"), QStringLiteral("bridge"));
+                chunk.insert(QStringLiteral("model"), directRuntime ? QStringLiteral("runtime") : QStringLiteral("bridge"));
                 chunk.insert(QStringLiteral("choices"), choices);
                 socket->write("data: ");
                 socket->write(QJsonDocument(chunk).toJson(QJsonDocument::Compact));
@@ -437,7 +469,7 @@ void AcpHttpServer::proxyChatCompletions(QTcpSocket *socket,
         if (response.isEmpty())
         {
             QJsonObject payload;
-            payload.insert(QStringLiteral("error"), errorMessage.isEmpty() ? QStringLiteral("Bridge chat failed.") : errorMessage);
+            payload.insert(QStringLiteral("error"), errorMessage.isEmpty() ? QStringLiteral("Runtime chat failed.") : errorMessage);
             socket->write("data: ");
             socket->write(QJsonDocument(payload).toJson(QJsonDocument::Compact));
             socket->write("\n\n");

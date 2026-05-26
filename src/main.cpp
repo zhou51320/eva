@@ -166,6 +166,7 @@ int main(int argc, char *argv[])
     toolTimer.start();
     ToolExecutor tool(applicationDirPath);      // 工具执行器
     NetClient *netClient = new NetClient;  // ?????worker ????????
+    runtime.attachNetworkDriver(netClient, true);
     StartupLogger::log(QStringLiteral("xTool 构造完成（%1 ms）").arg(toolTimer.elapsed()));
     FlowTracer::log(FlowChannel::Lifecycle, QStringLiteral("construct: xTool %1 ms").arg(toolTimer.elapsed()));
     // 将 xNet 改为堆对象，确保在其所属线程内析构，避免 Windows 下 QWinEventNotifier 跨线程清理告警
@@ -225,19 +226,6 @@ int main(int argc, char *argv[])
     QThread *tool_thread = new QThread;
     tool.moveToThread(tool_thread);
     tool_thread->start();
-    QThread *net_thread = new QThread;
-    netClient->moveToThread(net_thread);
-    // 当线程结束时，在线程上下文中安全删除 xNet，避免跨线程销毁导致的 QWinEventNotifier 警告/卡顿
-    QObject::connect(net_thread, &QThread::finished, netClient, &QObject::deleteLater);
-    net_thread->start();
-    // 退出前先请求停止网络流（排队到 net 所在线程）
-    QObject::connect(&a, &QCoreApplication::aboutToQuit, [netClient]()
-                     { QMetaObject::invokeMethod(netClient, "stop", Qt::QueuedConnection, Q_ARG(bool, true)); });
-    // 再优雅退出并等待线程结束，确保 xNet 在其线程内清理完毕，避免退出时短暂卡住
-    QObject::connect(&a, &QCoreApplication::aboutToQuit, [net_thread]()
-                     {
-        net_thread->quit();
-        net_thread->wait(3000); });
     // Ensure knowledge-base embedding server is stopped when the app quits,
     // even if the Expend window was closed earlier
     QObject::connect(&a, &QCoreApplication::aboutToQuit, &expend, [&expend]()
@@ -294,21 +282,21 @@ int main(int argc, char *argv[])
     QObject::connect(&expend, &Expend::expend2ui_scheduleAction, &w, &Widget::recv_schedule_action);            // 定时任务操作
 
     //------------------连接net和窗口-------------------
-    QObject::connect(netClient, &NetClient::net2ui_output, &w, &Widget::reflash_output, Qt::QueuedConnection); // 窗口输出区更新
+    QObject::connect(&runtime, &EvaRuntime::runtimeEvent, &w, &Widget::handleRuntimeEvent, Qt::QueuedConnection); // 运行层事件投影到窗口
     // Forward streaming output to Expend for TTS segmentation/playback
     QObject::connect(netClient, &NetClient::net2ui_output, &expend, &Expend::recv_output, Qt::QueuedConnection);                // 文转声：接收模型流式输出
-    QObject::connect(netClient, &NetClient::net2ui_tool_calls, &w, &Widget::recv_tool_calls, Qt::QueuedConnection);             // function_call 工具调用
-    QObject::connect(netClient, &NetClient::net2ui_state, &w, &Widget::reflash_state, Qt::QueuedConnection);                    // 窗口状态区更新
-    QObject::connect(netClient, &NetClient::net2ui_pushover, &w, &Widget::recv_pushover, Qt::QueuedConnection);                 // 完成推理
     QObject::connect(netClient, &NetClient::net2ui_pushover, &expend, &Expend::onNetTurnDone, Qt::QueuedConnection);            // 文转声：回合结束时刷新未完句
-    QObject::connect(netClient, &NetClient::net2ui_kv_tokens, &w, &Widget::recv_kv_from_net, Qt::QueuedConnection);             // 流式近似KV用量（链接模式兜底）
-    QObject::connect(netClient, &NetClient::net2ui_speeds, &w, &Widget::recv_net_speeds, Qt::QueuedConnection);                 // 最终速度（来自 xNet timings）
-    QObject::connect(netClient, &NetClient::net2ui_prompt_baseline, &w, &Widget::recv_prompt_baseline, Qt::QueuedConnection);   // prompt baseline tokens (LINK mode)
-    QObject::connect(netClient, &NetClient::net2ui_turn_counters, &w, &Widget::recv_turn_counters, Qt::QueuedConnection);       // timings cache/prompt/generated totals
-    QObject::connect(netClient, &NetClient::net2ui_slot_id, &w, &Widget::onSlotAssigned, Qt::QueuedConnection);                 // capture server slot id
-    QObject::connect(netClient, &NetClient::net2ui_reasoning_tokens, &w, &Widget::recv_reasoning_tokens, Qt::QueuedConnection); // think tokens for this turn
-    QObject::connect(&w, &Widget::ui2net_send, netClient, &NetClient::send, Qt::QueuedConnection);                 // ?????
-    QObject::connect(&w, &Widget::ui2net_stop, netClient, &NetClient::stop, Qt::QueuedConnection);                // ??????
+    // 发送/停止入口先进入 EvaRuntime，再由运行层转发到网络驱动。
+    // Widget 仍接收 NetClient 的旧信号，保证本阶段 UI 渲染行为不变。
+    QObject::connect(&w, &Widget::ui2net_send, &runtime, [&runtime](const RequestSnapshot &snapshot)
+                     {
+                         QString error;
+                         if (!runtime.sendRequestSnapshot(snapshot, &error))
+                         {
+                             qWarning().noquote() << QStringLiteral("EvaRuntime send failed:") << error;
+                         }
+                     }, Qt::QueuedConnection);
+    QObject::connect(&w, &Widget::ui2net_stop, &runtime, &EvaRuntime::setStopRequested, Qt::QueuedConnection);
 
     //------------------连接tool和窗口-------------------
     QObject::connect(&tool, &xTool::tool2ui_state, &w, &Widget::reflash_state);        // 窗口状态区更新

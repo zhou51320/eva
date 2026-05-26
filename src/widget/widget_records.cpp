@@ -1,5 +1,6 @@
 #include "widget.h"
 #include "ui_widget.h"
+#include "runtime/eva_runtime.h"
 
 #include <QApplication>
 #include <QHash>
@@ -155,7 +156,7 @@ int Widget::recordCreate(RecordRole role, const QString &toolNameOverride)
         const RecordNodeVisual visual = buildRecordNodeVisual(this, role, toolBadgeName);
         ui->recordBar->addNode(visual.base, QString(), visual.badge, visual.icon);
     }
-    if (isHostControlled())
+    if (isHostControlled() || acpBridgeConnected_)
     {
         const QString toolName = (role == RecordRole::Tool) ? recordEntries_[idx].toolName : QString();
         broadcastControlRecordAdd(role, toolName);
@@ -171,7 +172,7 @@ void Widget::recordAppendText(int index, const QString &text)
     QString tip = recordEntries_[index].text;
     if (tip.size() > 600) tip = tip.left(600) + "...";
     if (ui->recordBar) ui->recordBar->updateNode(index, tip);
-    if (isHostControlled())
+    if (isHostControlled() || acpBridgeConnected_)
     {
         broadcastControlRecordUpdate(index, text);
     }
@@ -204,7 +205,7 @@ void Widget::recordClear()
     lastSystemRecordIndex_ = -1;
     lastToolCallName_.clear();
     if (ui->recordBar) ui->recordBar->clearNodes();
-    if (isHostControlled()) broadcastControlRecordClear();
+    if (isHostControlled() || acpBridgeConnected_) broadcastControlRecordClear();
 }
 
 void Widget::updateRecordEntryContent(int index, const QString &newText)
@@ -552,23 +553,31 @@ void Widget::restoreSessionById(const QString &sessionId)
         reflash_state("ui:" + jtr("loaded session"), SUCCESS_SIGNAL);
 
     int resumeSlot = -1;
-    if (ui_mode == LINK_MODE)
+    const RuntimeMode mode = runtimeModeForUi();
+    const QString runtimeEndpoint = sessionEndpointForHistory();
+    if (mode == RuntimeMode::Link)
     {
-        const QString ep = (ui_state == CHAT_STATE) ? (apis.api_endpoint + apis.api_chat_endpoint)
-                                                    : (apis.api_endpoint + apis.api_completion_endpoint);
-        if (meta.endpoint == ep) resumeSlot = meta.slot_id;
+        const APIS stateApis = sessionApisSnapshot();
+        const QString fullChatEndpoint = stateApis.api_endpoint + stateApis.api_chat_endpoint;
+        const QString fullCompletionEndpoint = stateApis.api_endpoint + stateApis.api_completion_endpoint;
+        if ((!runtimeEndpoint.isEmpty() && meta.endpoint == runtimeEndpoint) ||
+            (!fullChatEndpoint.trimmed().isEmpty() && meta.endpoint == fullChatEndpoint) ||
+            (!fullCompletionEndpoint.trimmed().isEmpty() && meta.endpoint == fullCompletionEndpoint))
+        {
+            resumeSlot = meta.slot_id;
+        }
     }
     else
     {
-        const QString currentEp = formatLocalEndpoint(activeServerHost_, activeServerPort_);
         const QString legacyEp = serverManager ? serverManager->endpointBase() : QString();
-        if ((!currentEp.isEmpty() && meta.endpoint == currentEp) ||
+        if ((!runtimeEndpoint.isEmpty() && meta.endpoint == runtimeEndpoint) ||
             (!legacyEp.isEmpty() && meta.endpoint == legacyEp))
         {
             resumeSlot = meta.slot_id;
         }
     }
     currentSlotId_ = (resumeSlot >= 0) ? resumeSlot : -1;
+    syncRuntimeSessionMirror(true);
 }
 
 void Widget::replaceOutputRangeColored(int from, int to, const QString &text, QColor color)

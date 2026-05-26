@@ -122,7 +122,7 @@ void Widget::get_set()
     }
     else if (lazyUnloadTimer_)
     {
-        if (backendOnline_ && !turnActive_ && !toolInvocationActive_)
+        if (runtimeBackendReadyForUi() && !runtimeTurnActiveForUi() && !runtimeToolActiveForUi())
         {
             lazyUnloadTimer_->start(lazyUnloadMs_);
         }
@@ -155,6 +155,7 @@ void Widget::get_set()
     // 推理设备：同步到 DeviceManager（auto/cpu/cuda/vulkan/opencl）
     ui_device_backend = settings_ui->device_comboBox->currentText().trimmed().toLower();
     DeviceManager::setUserChoice(ui_device_backend);
+    syncRuntimeSessionMirror(false, false, false, true);
 }
 // 获取约定中的纸面值
 void Widget::get_date(bool applySandbox)
@@ -261,6 +262,7 @@ void Widget::get_date(bool applySandbox)
     {
         syncDockerSandboxConfig();
     }
+    syncRuntimeSessionMirror(false, false, false, true);
 }
 // 手搓输出解析器，提取可能的xml，目前只支持一个参数
 mcp::json Widget::XMLparser(const QString &text, QStringList *debugLog)
@@ -1103,8 +1105,11 @@ void Widget::auto_save_user()
     createTempDirectory(applicationDirPath + "/EVA_TEMP");
     QSettings settings(applicationDirPath + "/EVA_TEMP/eva_config.ini", QSettings::IniFormat);
     settings.setIniCodec("utf-8");
-    settings.setValue("ui_mode", ui_mode);         // 机体模式
-    settings.setValue("ui_state", ui_state);       // 机体状态
+    const RuntimeMode runtimeMode = runtimeModeForUi();
+    const ConversationMode conversationMode = runtimeConversationModeForUi();
+    const SETTINGS runtimeSettings = sessionSettingsSnapshot();
+    settings.setValue("ui_mode", runtimeMode == RuntimeMode::Link ? LINK_MODE : LOCAL_MODE); // 机体模式
+    settings.setValue("ui_state", conversationMode == ConversationMode::Complete ? COMPLETE_STATE : CHAT_STATE); // 机体状态
     settings.setValue("shell", shell);             // shell路径
     settings.setValue("python", pythonExecutable); // python版本
     settings.setValue("global_font_family", globalUiSettings_.fontFamily);
@@ -1113,20 +1118,20 @@ void Widget::auto_save_user()
     settings.setValue("output_font_size", globalUiSettings_.outputFontSizePt);
     settings.setValue("global_theme", globalUiSettings_.themeId);
     // 保存设置参数
-    settings.setValue("modelpath", ui_SETTINGS.modelpath); // 模型路径
+    settings.setValue("modelpath", runtimeSettings.modelpath); // 模型路径
     // Persist core sampling params as strings only to avoid float drift on reload
-    settings.setValue("temp_str", QString::number(ui_SETTINGS.temp, 'f', 6));
-    settings.setValue("repeat_str", QString::number(ui_SETTINGS.repeat, 'f', 6));
-    settings.setValue("top_k", ui_SETTINGS.top_k);     // top-k 采样
-    settings.setValue("ngl", ui_SETTINGS.ngl);         // gpu负载层数
-    settings.setValue("nthread", ui_SETTINGS.nthread); // cpu线程数
-    settings.setValue("nctx", ui_SETTINGS.nctx);
-    settings.setValue("mmprojpath", ui_SETTINGS.mmprojpath); // 视觉
-    settings.setValue("lorapath", ui_SETTINGS.lorapath);     // lora
+    settings.setValue("temp_str", QString::number(runtimeSettings.temp, 'f', 6));
+    settings.setValue("repeat_str", QString::number(runtimeSettings.repeat, 'f', 6));
+    settings.setValue("top_k", runtimeSettings.top_k);     // top-k 采样
+    settings.setValue("ngl", runtimeSettings.ngl);         // gpu负载层数
+    settings.setValue("nthread", runtimeSettings.nthread); // cpu线程数
+    settings.setValue("nctx", runtimeSettings.nctx);
+    settings.setValue("mmprojpath", runtimeSettings.mmprojpath); // 视觉
+    settings.setValue("lorapath", runtimeSettings.lorapath);     // lora
     settings.remove("monitor_frame"); // 监视帧/监视帧率功能已移除：清理旧配置项，避免误解
     // 保存隐藏设置
-    settings.setValue("hid_npredict", ui_SETTINGS.hid_npredict); // 最大输出长度
-    settings.setValue("hid_top_p_str", QString::number(ui_SETTINGS.hid_top_p, 'f', 6));
+    settings.setValue("hid_npredict", runtimeSettings.hid_npredict); // 最大输出长度
+    settings.setValue("hid_top_p_str", QString::number(runtimeSettings.hid_top_p, 'f', 6));
     // Clean legacy percent keys and numeric keys to keep only string keys
     settings.remove("hid_top_p_percent");
     settings.remove("temp_percent");
@@ -1134,13 +1139,13 @@ void Widget::auto_save_user()
     settings.remove("temp");
     settings.remove("repeat");
     settings.remove("hid_top_p");
-    settings.setValue("hid_batch", ui_SETTINGS.hid_batch);
-    settings.setValue("hid_n_ubatch", ui_SETTINGS.hid_n_ubatch);
-    settings.setValue("hid_use_mmap", ui_SETTINGS.hid_use_mmap);
-    settings.setValue("hid_use_mlock", ui_SETTINGS.hid_use_mlock);
-    settings.setValue("hid_flash_attn", ui_SETTINGS.hid_flash_attn);
-    settings.setValue("hid_parallel", ui_SETTINGS.hid_parallel);
-    settings.setValue("reasoning_effort", ui_SETTINGS.reasoning_effort);
+    settings.setValue("hid_batch", runtimeSettings.hid_batch);
+    settings.setValue("hid_n_ubatch", runtimeSettings.hid_n_ubatch);
+    settings.setValue("hid_use_mmap", runtimeSettings.hid_use_mmap);
+    settings.setValue("hid_use_mlock", runtimeSettings.hid_use_mlock);
+    settings.setValue("hid_flash_attn", runtimeSettings.hid_flash_attn);
+    settings.setValue("hid_parallel", runtimeSettings.hid_parallel);
+    settings.setValue("reasoning_effort", runtimeSettings.reasoning_effort);
     // 上下文压缩（Compaction）配置：可在配置文件中手动调整
     settings.setValue("compaction_enabled", compactionSettings_.enabled);
     settings.setValue("compaction_trigger_ratio", QString::number(compactionSettings_.trigger_ratio, 'f', 3));
@@ -1203,11 +1208,12 @@ void Widget::auto_save_user()
     // 保存自定义的约定模板
     settings.setValue("custom1_date_system", custom1_date_system);
     // 保存 api 参数：仅在链接模式下更新，避免切到本地模式后把远端配置覆盖掉
-    if (ui_mode == LINK_MODE)
+    if (runtimeMode == RuntimeMode::Link)
     {
-        settings.setValue("api_endpoint", apis.api_endpoint);
-        settings.setValue("api_key", apis.api_key);
-        settings.setValue("api_model", apis.api_model);
+        const APIS runtimeApis = sessionApisSnapshot();
+        settings.setValue("api_endpoint", runtimeApis.api_endpoint);
+        settings.setValue("api_key", runtimeApis.api_key);
+        settings.setValue("api_model", runtimeApis.api_model);
     }
     if (skillManager)
     {
@@ -1224,8 +1230,10 @@ void Widget::auto_save_user()
 // ???????????????
 void Widget::emit_send(const ENDPOINT_DATA &data)
 {
+    const quint64 turnId = data.turn_id > 0 ? data.turn_id : runtimeActiveTurnIdForUi();
+    const APIS runtimeApis = sessionApisSnapshot();
     RequestSnapshot snapshot = runtime_
-                                   ? runtime_->buildRequestSnapshot(apis, data, wordsObj, language_flag, activeTurnId_)
-                                   : RequestSnapshot{apis, data, wordsObj, language_flag, activeTurnId_};
+                                   ? runtime_->buildRequestSnapshot(runtimeApis, data, wordsObj, language_flag, turnId)
+                                   : RequestSnapshot{runtimeApis, data, wordsObj, language_flag, turnId};
     emit ui2net_send(snapshot);
 }

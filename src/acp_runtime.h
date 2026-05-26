@@ -7,8 +7,11 @@
 
 #include "acp_bridge_client.h"
 #include "app/app_context.h"
+#include "runtime/eva_runtime.h"
 #include "service/backend/xbackend.h"
 #include "xconfig.h"
+
+class NetClient;
 
 class AcpRuntime : public QObject
 {
@@ -34,11 +37,13 @@ class AcpRuntime : public QObject
     bool loadBackend(const QJsonObject &request, QString *errorMessage);
     bool linkModeEnabled() const;
     bool bridgeModeEnabled() const;
+    bool directRuntimeEnabled() const;
     QString modelsEndpoint() const;
     QString chatCompletionsEndpoint() const;
     QString configuredApiKey() const;
     QString configuredApiModel() const;
     bool resetConversation(QString *errorMessage);
+    bool stopRuntime(QString *errorMessage);
     QJsonObject chatCompletion(const QJsonObject &request, QString *errorMessage);
     QJsonObject streamChatCompletion(const QJsonObject &request,
                                      const std::function<void(const QString &role, const QString &chunk)> &onChunk,
@@ -64,6 +69,8 @@ class AcpRuntime : public QObject
     bool isLinkMode() const;
     void appendLogTail(const QString &chunk);
     void refreshBackendProbe();
+    void syncRuntimeFromCurrentState();
+    QJsonObject runtimeStatePayload() const;
 
     APIS apis_;
     EVA_MODE uiMode_ = LOCAL_MODE;
@@ -79,6 +86,9 @@ class AcpRuntime : public QObject
     QString lastError_;
     QString lastOutput_;
     bool backendReady_ = false;
+    bool directRuntimeEnabled_ = true;
     LocalServerManager *serverManager_ = nullptr;
     AcpBridgeClient *bridgeClient_ = nullptr;
+    EvaRuntime *runtimeCore_ = nullptr;
+    NetClient *netClient_ = nullptr;
 };

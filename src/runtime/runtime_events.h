@@ -15,6 +15,7 @@ enum class RuntimeEventType
     ToolStarted,
     ToolFinished,
     TurnFinished,
+    Metrics,
     Error,
     CommandRejected,
 };
@@ -31,6 +32,7 @@ inline QString runtimeEventTypeName(RuntimeEventType type)
     case RuntimeEventType::ToolStarted: return QStringLiteral("tool_started");
     case RuntimeEventType::ToolFinished: return QStringLiteral("tool_finished");
     case RuntimeEventType::TurnFinished: return QStringLiteral("turn_finished");
+    case RuntimeEventType::Metrics: return QStringLiteral("metrics");
     case RuntimeEventType::Error: return QStringLiteral("error");
     case RuntimeEventType::CommandRejected: return QStringLiteral("command_rejected");
     }

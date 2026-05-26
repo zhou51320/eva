@@ -53,7 +53,7 @@ void Widget::applyInputVisualState(const QByteArray &state)
 // 初始界面状态
 void Widget::ui_state_init()
 {
-    FlowTracer::log(FlowChannel::UI, QStringLiteral("ui_state:init (load enabled, others locked)"), activeTurnId_);
+    FlowTracer::log(FlowChannel::UI, QStringLiteral("ui_state:init (load enabled, others locked)"), runtimeActiveTurnIdForUi());
     ui->load->setEnabled(1);  // 装载按钮
     ui->date->setEnabled(0);  // 约定按钮
     ui->set->setEnabled(0);   // 设置按钮
@@ -66,7 +66,7 @@ void Widget::ui_state_init()
 // 装载中界面状态
 void Widget::ui_state_loading()
 {
-    FlowTracer::log(FlowChannel::UI, QStringLiteral("ui_state:loading (all controls disabled)"), activeTurnId_);
+    FlowTracer::log(FlowChannel::UI, QStringLiteral("ui_state:loading (all controls disabled)"), runtimeActiveTurnIdForUi());
     ui->send->setEnabled(0);         // 发送按钮
     ui->reset->setEnabled(0);        // 重置按钮
     ui->date->setEnabled(0);         // 约定按钮
@@ -79,7 +79,7 @@ void Widget::ui_state_loading()
 // 推理中界面状态
 void Widget::ui_state_pushing()
 {
-    FlowTracer::log(FlowChannel::UI, QStringLiteral("ui_state:pushing (send disabled, reset enabled)"), activeTurnId_);
+    FlowTracer::log(FlowChannel::UI, QStringLiteral("ui_state:pushing (send disabled, reset enabled)"), runtimeActiveTurnIdForUi());
     wait_play(); // 开启推理动画
     ui->load->setEnabled(0);
     ui->date->setEnabled(0);
@@ -94,16 +94,20 @@ void Widget::ui_state_pushing()
 // 待机界面状态
 void Widget::ui_state_normal()
 {
+    const RuntimeMode mode = runtimeModeForUi();
+    const ConversationMode conversation = runtimeConversationModeForUi();
+    const bool endpointReady = runtimeEndpointReadyForUi();
+    const bool runtimeBusy = runtimeBusyForUi();
     FlowTracer::log(FlowChannel::UI,
                     QStringLiteral("ui_state:normal mode=%1 state=%2 loaded=%3 running=%4")
-                        .arg(ui_mode == LINK_MODE ? QStringLiteral("link") : QStringLiteral("local"))
-                        .arg(ui_state == CHAT_STATE ? QStringLiteral("chat") : QStringLiteral("complete"))
-                        .arg(is_load ? QStringLiteral("yes") : QStringLiteral("no"))
-                        .arg(is_run ? QStringLiteral("yes") : QStringLiteral("no")),
-                    activeTurnId_);
+                        .arg(runtimeModeName(mode))
+                        .arg(conversationModeName(conversation))
+                        .arg(endpointReady ? QStringLiteral("yes") : QStringLiteral("no"))
+                        .arg(runtimeBusy ? QStringLiteral("yes") : QStringLiteral("no")),
+                    runtimeActiveTurnIdForUi());
     // 本地后端生命周期处于过渡态时，任何“回到 normal”的请求都应被忽略，
     // 否则会把“装载中”按钮状态提前解锁，且会意外停止装载动画。
-    if (ui_mode == LOCAL_MODE && isBackendLifecycleTransitioning() && !lazyWakeInFlight_)
+    if (mode == RuntimeMode::Local && runtimeBackendTransitioningForUi() && !lazyWakeInFlight_)
     {
         ui_state_loading();
         return;
@@ -130,7 +134,7 @@ void Widget::ui_state_normal()
         }
         return;
     }
-    if (is_run) // 如果是模型正在运行的状态的话
+    if (runtimeBusy) // 如果是模型正在运行的状态的话
     {
         ui->reset->setEnabled(1);
         ui->input->textEdit->setEnabled(1);
@@ -142,18 +146,18 @@ void Widget::ui_state_normal()
     }
 
     decode_pTimer->stop(); // 停止解码动画
-    if (ui_state == CHAT_STATE)
+    if (conversation == ConversationMode::Chat)
     {
         ui->input->setVisible(1);
         ui->send->setVisible(1);
 
         ui->load->setEnabled(1);
-        if (is_load || ui_mode == LINK_MODE)
+        if (endpointReady)
         {
             ui->reset->setEnabled(1);
             ui->send->setEnabled(1);
         }
-        if (is_load || ui_mode == LINK_MODE)
+        if (endpointReady)
         {
             ui->date->setEnabled(1);
             ui->set->setEnabled(1);
@@ -169,11 +173,11 @@ void Widget::ui_state_normal()
 
         ui->output->setReadOnly(1);
     }
-    else if (ui_state == COMPLETE_STATE)
+    else if (conversation == ConversationMode::Complete)
     {
         ui->load->setEnabled(1);
 
-        if (is_load || ui_mode == LINK_MODE)
+        if (endpointReady)
         {
             ui->reset->setEnabled(1);
             ui->send->setEnabled(1);
@@ -193,7 +197,7 @@ void Widget::ui_state_normal()
         ui->output->setFocus(); // 设置输出区为焦点
     }
     // 服务模式已移除
-    if (ui_mode == LINK_MODE)
+    if (mode == RuntimeMode::Link)
     {
         change_api_dialog(0);
     } // 链接模式不要解码设置

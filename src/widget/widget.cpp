@@ -3,6 +3,7 @@
 #include "widget.h"
 #include "core/session/session_controller.h"
 #include "core/toolflow/tool_flow_controller.h"
+#include "runtime/eva_runtime.h"
 #include "service/backend/backend_coordinator.h"
 
 #include "controller_overlay.h"
@@ -347,7 +348,6 @@ Widget::Widget(QWidget *parent, QString applicationDirPath_)
         if (ignoreNextServerStopped_ || lastServerRestart_) { ignoreNextServerStopped_ = false; suppressStateClearOnStop_ = false; return; }
         // 其它情况：后端确实已停止 -> 重置 UI，并停止任何进行中的动画
 
-        backendOnline_ = false;
         lazyWakeInFlight_ = false;
         applyWakeUiLock(false);
         if (proxyServer_) proxyServer_->setBackendAvailable(false);
@@ -355,6 +355,7 @@ Widget::Widget(QWidget *parent, QString applicationDirPath_)
         const bool lazyStop = lazyUnloadPreserveState_ || wasLazyUnloaded;
         cancelLazyUnload(QStringLiteral("server stopped"));
         pendingSendAfterWake_ = false;
+        projectRuntimeBackendOfflineState(true);
         setBackendLifecycleState(lazyStop ? BackendLifecycleState::Sleeping : BackendLifecycleState::Stopped,
                                  lazyStop ? QStringLiteral("lazy stop") : QStringLiteral("process stopped"),
                                  SIGNAL_SIGNAL,
@@ -372,11 +373,10 @@ Widget::Widget(QWidget *parent, QString applicationDirPath_)
         }
         if (decode_pTimer) decode_pTimer->stop();
         lastServerRestart_ = false;
-        is_load = false;
         EVA_title = jtr("current model") + " ";
         this->setWindowTitle(EVA_title);
         trayIcon->setToolTip(EVA_title);
-        is_run = false;
+        projectRuntimeIdleState(true);
         unlockButtonsAfterError();
         if (fallbackEligible && triggerWin7CpuFallback(QStringLiteral("process exit")))
         {
@@ -427,11 +427,6 @@ Widget::Widget(QWidget *parent, QString applicationDirPath_)
         if (serverManager) serverManager->stop(); });
     StartupLogger::log(QStringLiteral("[widget] 构造函数收尾, 总耗时 %1 ms").arg(ctorTimer.elapsed()));
     qDebug() << "widget init over";
-}
-
-void Widget::setRuntime(EvaRuntime *runtime)
-{
-    runtime_ = runtime;
 }
 
 Widget::~Widget()

@@ -3,15 +3,18 @@
 #include <QDateTime>
 #include <QDir>
 #include <QDirIterator>
+#include <QEventLoop>
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QSettings>
+#include <QTimer>
 #include <QUrl>
 #include <algorithm>
 
 #include "app/config_migrator.h"
 #include "app/default_model_finder.h"
 #include "runtime/runtime_bootstrap.h"
+#include "service/net/net_client.h"
 #include "utils/devicemanager.h"
 #include "utils/flowtracer.h"
 #include "utils/openai_compat.h"
@@ -72,7 +75,9 @@ AcpRuntime::AcpRuntime(const LaunchOptions &options, QObject *parent)
     : QObject(parent),
       options_(options),
       serverManager_(new LocalServerManager(this, QCoreApplication::applicationDirPath())),
-      bridgeClient_(new AcpBridgeClient(this))
+      bridgeClient_(new AcpBridgeClient(this)),
+      runtimeCore_(new EvaRuntime(this)),
+      netClient_(new NetClient)
 {
     connect(serverManager_, &LocalServerManager::serverOutput, this, &AcpRuntime::onServerOutput);
     connect(serverManager_, &LocalServerManager::serverState, this, &AcpRuntime::onServerState);
@@ -84,9 +89,28 @@ AcpRuntime::AcpRuntime(const LaunchOptions &options, QObject *parent)
 bool AcpRuntime::initialize()
 {
     ctx_ = RuntimeBootstrap::prepareContext();
+    const QString mode = qEnvironmentVariable("EVA_ACP_RUNTIME_MODE").trimmed().toLower();
+    directRuntimeEnabled_ = (mode != QStringLiteral("bridge") && mode != QStringLiteral("legacy"));
+    QString runtimeError;
+    if (directRuntimeEnabled_ && !runtimeCore_->initialize(ctx_, &runtimeError))
+    {
+        directRuntimeEnabled_ = false;
+        lastError_ = runtimeError;
+        StartupLogger::log(QStringLiteral("[acp] direct runtime disabled: %1").arg(runtimeError));
+    }
+    if (directRuntimeEnabled_)
+    {
+        runtimeCore_->attachNetworkDriver(netClient_, true);
+    }
+    else if (netClient_)
+    {
+        delete netClient_;
+        netClient_ = nullptr;
+    }
     loadConfig();
     refreshBackendProbe();
     applyServerSettings();
+    syncRuntimeFromCurrentState();
     StartupLogger::log(QStringLiteral("[acp] runtime initialized"));
     return true;
 }
@@ -104,10 +128,18 @@ quint16 AcpRuntime::bindPort() const
 QJsonObject AcpRuntime::healthPayload() const
 {
     QJsonObject payload;
+    const bool hasRuntime = directRuntimeEnabled_ && runtimeCore_;
+    const RuntimeState runtimeState = hasRuntime ? runtimeCore_->stateSnapshot() : RuntimeState();
+    const QString backendState = hasRuntime ? runtimePhaseName(runtimeState.phase) : lifecycleState_;
+    const bool backendReady = hasRuntime ? runtimeState.backendReady : backendReady_;
     QString health = QStringLiteral("ok");
-    if (lifecycleState_ == QStringLiteral("error"))
+    if (hasRuntime && runtimeState.phase == RuntimePhase::Error)
         health = QStringLiteral("degraded");
-    else if (lifecycleState_ == QStringLiteral("starting"))
+    else if (hasRuntime && runtimeState.phase == RuntimePhase::Loading)
+        health = QStringLiteral("starting");
+    else if (!hasRuntime && lifecycleState_ == QStringLiteral("error"))
+        health = QStringLiteral("degraded");
+    else if (!hasRuntime && lifecycleState_ == QStringLiteral("starting"))
         health = QStringLiteral("starting");
     payload.insert(QStringLiteral("status"), health);
     payload.insert(QStringLiteral("service"), QStringLiteral("eva-acp"));
@@ -115,8 +147,11 @@ QJsonObject AcpRuntime::healthPayload() const
     payload.insert(QStringLiteral("bind_port"), static_cast<int>(options_.bindPort));
     payload.insert(QStringLiteral("app_dir"), ctx_.appDir);
     payload.insert(QStringLiteral("config_path"), configPath());
-    payload.insert(QStringLiteral("backend_state"), lifecycleState_);
-    payload.insert(QStringLiteral("backend_ready"), backendReady_);
+    payload.insert(QStringLiteral("backend_state"), backendState);
+    payload.insert(QStringLiteral("backend_ready"), backendReady);
+    payload.insert(QStringLiteral("state_source"), directRuntimeEnabled_ ? QStringLiteral("direct_runtime") : QStringLiteral("legacy_acp"));
+    payload.insert(QStringLiteral("direct_runtime"), directRuntimeEnabled_);
+    payload.insert(QStringLiteral("bridge_available"), bridgeClient_ && bridgeClient_->isConnected());
     return payload;
 }
 
@@ -124,13 +159,16 @@ QJsonObject AcpRuntime::modelsPayload() const
 {
     QJsonArray data;
     QString bridgeError;
+    const bool hasRuntime = directRuntimeEnabled_ && runtimeCore_;
+    const RuntimeState runtimeState = hasRuntime ? runtimeCore_->stateSnapshot() : RuntimeState();
+    const bool linkMode = hasRuntime ? runtimeState.mode == RuntimeMode::Link : isLinkMode();
     if (bridgeModeEnabled())
     {
         data = bridgeClient_->listModels(&bridgeError);
     }
     if (data.isEmpty())
     {
-        if (isLinkMode())
+        if (linkMode)
         {
             const QJsonObject remote = remoteModelObject();
             if (!remote.isEmpty()) data.append(remote);
@@ -154,6 +192,15 @@ QJsonObject AcpRuntime::modelsPayload() const
 
 QJsonObject AcpRuntime::backendStatePayload() const
 {
+    if (directRuntimeEnabled_ && runtimeCore_)
+    {
+        QJsonObject payload = runtimeStatePayload();
+        QString bridgeError;
+        payload.insert(QStringLiteral("bridge_available"), bridgeModeEnabled());
+        if (!bridgeError.isEmpty()) payload.insert(QStringLiteral("bridge_error"), bridgeError);
+        return payload;
+    }
+
     QString bridgeError;
     if (bridgeModeEnabled())
     {
@@ -173,6 +220,9 @@ QJsonObject AcpRuntime::backendStatePayload() const
     payload.insert(QStringLiteral("available_backends"), isLinkMode() ? QJsonArray() : QJsonArray::fromStringList(DeviceManager::availableBackends()));
     payload.insert(QStringLiteral("backend_program_path"), isLinkMode() ? QString() : DeviceManager::programPath(QStringLiteral("llama-server-main")));
     payload.insert(QStringLiteral("server_running"), !isLinkMode() && serverManager_ && serverManager_->isRunning());
+    payload.insert(QStringLiteral("state_source"), bridgeError.isEmpty() ? QStringLiteral("legacy_acp") : QStringLiteral("bridge"));
+    payload.insert(QStringLiteral("direct_runtime"), false);
+    payload.insert(QStringLiteral("bridge_available"), bridgeError.isEmpty() && bridgeClient_ && bridgeClient_->isConnected());
     payload.insert(QStringLiteral("port"), isLinkMode() ? QString() : backendPort_);
     payload.insert(QStringLiteral("nctx"), settings_.nctx);
     payload.insert(QStringLiteral("ngl"), settings_.ngl);
@@ -250,6 +300,20 @@ bool AcpRuntime::loadBackend(const QJsonObject &request, QString *errorMessage)
         if (serverManager_ && serverManager_->isRunning())
         {
             serverManager_->stop();
+        }
+        if (directRuntimeEnabled_ && runtimeCore_)
+        {
+            RuntimeConnectRemoteCommand command;
+            command.endpoint = apis_.api_endpoint;
+            command.apiKey = apis_.api_key;
+            command.model = apis_.api_model;
+            command.sampling = settings_;
+            QString runtimeError;
+            if (!runtimeCore_->connectRemote(command, &runtimeError))
+            {
+                if (errorMessage) *errorMessage = runtimeError;
+                return false;
+            }
         }
         saveConfig();
         return true;
@@ -342,13 +406,36 @@ bool AcpRuntime::loadBackend(const QJsonObject &request, QString *errorMessage)
         return false;
     }
 
-    saveConfig();
     applyServerSettings();
+    if (directRuntimeEnabled_ && runtimeCore_)
+    {
+        RuntimeLoadLocalCommand command;
+        command.modelPath = settings_.modelpath;
+        command.mmprojPath = settings_.mmprojpath;
+        command.loraPath = settings_.lorapath;
+        command.backendChoice = backendChoice_;
+        command.port = backendPort_;
+        command.settings = settings_;
+        QString runtimeError;
+        if (!runtimeCore_->loadLocal(command, &runtimeError))
+        {
+            if (errorMessage) *errorMessage = runtimeError;
+            return false;
+        }
+    }
+    saveConfig();
 
     backendReady_ = false;
     readyEndpoint_.clear();
     lastError_.clear();
     lifecycleState_ = QStringLiteral("starting");
+    if (directRuntimeEnabled_ && runtimeCore_)
+    {
+        runtimeCore_->updateBackendStatus(BackendLifecycleState::Starting,
+                                          false,
+                                          backendEndpoint(),
+                                          backendResolved_);
+    }
     FlowTracer::log(FlowChannel::Backend,
                     QStringLiteral("acp: ensure backend model=%1 backend=%2 port=%3")
                         .arg(settings_.modelpath, backendChoice_, backendPort_));
@@ -383,6 +470,13 @@ void AcpRuntime::onServerReady(const QString &endpoint)
     readyEndpoint_ = endpoint;
     lastError_.clear();
     backendResolved_ = DeviceManager::lastResolvedDeviceFor(QStringLiteral("llama-server-main"));
+    if (directRuntimeEnabled_ && runtimeCore_)
+    {
+        runtimeCore_->updateBackendStatus(BackendLifecycleState::Running,
+                                          true,
+                                          backendEndpoint(),
+                                          backendResolved_);
+    }
     FlowTracer::log(FlowChannel::Backend, QStringLiteral("acp: backend ready %1").arg(endpoint));
 }
 
@@ -394,6 +488,10 @@ void AcpRuntime::onServerStopped()
         lifecycleState_ = QStringLiteral("stopped");
     }
     readyEndpoint_.clear();
+    if (directRuntimeEnabled_ && runtimeCore_)
+    {
+        runtimeCore_->updateBackendStatus(BackendLifecycleState::Stopped, false, backendEndpoint(), backendResolved_);
+    }
 }
 
 void AcpRuntime::onServerStartFailed(const QString &reason)
@@ -402,6 +500,14 @@ void AcpRuntime::onServerStartFailed(const QString &reason)
     lifecycleState_ = QStringLiteral("error");
     readyEndpoint_.clear();
     lastError_ = trimTail(reason, 2048);
+    if (directRuntimeEnabled_ && runtimeCore_)
+    {
+        runtimeCore_->updateBackendStatus(BackendLifecycleState::Error,
+                                          false,
+                                          backendEndpoint(),
+                                          backendResolved_,
+                                          lastError_);
+    }
 }
 
 void AcpRuntime::loadConfig()
@@ -466,26 +572,31 @@ void AcpRuntime::saveConfig() const
 {
     QSettings settings(configPath(), QSettings::IniFormat);
     settings.setIniCodec("utf-8");
-    settings.setValue(QStringLiteral("ui_mode"), static_cast<int>(uiMode_));
-    settings.setValue(QStringLiteral("modelpath"), settings_.modelpath);
-    settings.setValue(QStringLiteral("mmprojpath"), settings_.mmprojpath);
-    settings.setValue(QStringLiteral("lorapath"), settings_.lorapath);
-    settings.setValue(QStringLiteral("ngl"), settings_.ngl);
-    settings.setValue(QStringLiteral("nthread"), settings_.nthread);
-    settings.setValue(QStringLiteral("nctx"), settings_.nctx);
-    settings.setValue(QStringLiteral("hid_batch"), settings_.hid_batch);
-    settings.setValue(QStringLiteral("hid_parallel"), settings_.hid_parallel);
-    settings.setValue(QStringLiteral("hid_use_mmap"), settings_.hid_use_mmap);
-    settings.setValue(QStringLiteral("hid_use_mlock"), settings_.hid_use_mlock);
-    settings.setValue(QStringLiteral("hid_flash_attn"), settings_.hid_flash_attn);
-    settings.setValue(QStringLiteral("reasoning_effort"), settings_.reasoning_effort);
+    const RuntimeState runtimeState = (directRuntimeEnabled_ && runtimeCore_) ? runtimeCore_->stateSnapshot() : RuntimeState();
+    const bool hasRuntime = runtimeState.initialized;
+    const RuntimeMode mode = hasRuntime ? runtimeState.mode : (isLinkMode() ? RuntimeMode::Link : RuntimeMode::Local);
+    const SETTINGS runtimeSettings = hasRuntime ? runtimeState.settings : settings_;
+    const APIS runtimeApis = hasRuntime ? runtimeState.apis : apis_;
+    settings.setValue(QStringLiteral("ui_mode"), mode == RuntimeMode::Link ? static_cast<int>(LINK_MODE) : static_cast<int>(LOCAL_MODE));
+    settings.setValue(QStringLiteral("modelpath"), runtimeSettings.modelpath);
+    settings.setValue(QStringLiteral("mmprojpath"), runtimeSettings.mmprojpath);
+    settings.setValue(QStringLiteral("lorapath"), runtimeSettings.lorapath);
+    settings.setValue(QStringLiteral("ngl"), runtimeSettings.ngl);
+    settings.setValue(QStringLiteral("nthread"), runtimeSettings.nthread);
+    settings.setValue(QStringLiteral("nctx"), runtimeSettings.nctx);
+    settings.setValue(QStringLiteral("hid_batch"), runtimeSettings.hid_batch);
+    settings.setValue(QStringLiteral("hid_parallel"), runtimeSettings.hid_parallel);
+    settings.setValue(QStringLiteral("hid_use_mmap"), runtimeSettings.hid_use_mmap);
+    settings.setValue(QStringLiteral("hid_use_mlock"), runtimeSettings.hid_use_mlock);
+    settings.setValue(QStringLiteral("hid_flash_attn"), runtimeSettings.hid_flash_attn);
+    settings.setValue(QStringLiteral("reasoning_effort"), runtimeSettings.reasoning_effort);
     settings.setValue(QStringLiteral("port"), backendPort_);
     settings.setValue(QStringLiteral("device_backend"), backendChoice_);
-    if (isLinkMode())
+    if (mode == RuntimeMode::Link)
     {
-        settings.setValue(QStringLiteral("api_endpoint"), apis_.api_endpoint);
-        settings.setValue(QStringLiteral("api_key"), apis_.api_key);
-        settings.setValue(QStringLiteral("api_model"), apis_.api_model);
+        settings.setValue(QStringLiteral("api_endpoint"), runtimeApis.api_endpoint);
+        settings.setValue(QStringLiteral("api_key"), runtimeApis.api_key);
+        settings.setValue(QStringLiteral("api_model"), runtimeApis.api_model);
     }
     settings.sync();
 }
@@ -508,6 +619,14 @@ QString AcpRuntime::configPath() const
 
 QString AcpRuntime::backendEndpoint() const
 {
+    if (directRuntimeEnabled_ && runtimeCore_)
+    {
+        const RuntimeState state = runtimeCore_->stateSnapshot();
+        if (state.mode == RuntimeMode::Link)
+            return state.apis.api_endpoint.isEmpty() ? state.endpoint : state.apis.api_endpoint;
+        if (!state.endpoint.isEmpty())
+            return state.endpoint;
+    }
     if (isLinkMode()) return apis_.api_endpoint;
     if (!readyEndpoint_.isEmpty()) return readyEndpoint_;
     return QStringLiteral("http://127.0.0.1:%1").arg(backendPort_);
@@ -530,6 +649,17 @@ QStringList AcpRuntime::discoverLocalModels() const
         const QString current = canonicalPath(settings_.modelpath);
         if (!current.isEmpty() && !models.contains(current)) models.append(current);
     }
+    if (directRuntimeEnabled_ && runtimeCore_)
+    {
+        const RuntimeState state = runtimeCore_->stateSnapshot();
+        QString runtimeModelPath = state.currentModelPath;
+        if (runtimeModelPath.isEmpty()) runtimeModelPath = state.settings.modelpath;
+        if (!runtimeModelPath.isEmpty() && QFileInfo::exists(runtimeModelPath))
+        {
+            const QString current = canonicalPath(runtimeModelPath);
+            if (!current.isEmpty() && !models.contains(current)) models.append(current);
+        }
+    }
     models.removeDuplicates();
     std::sort(models.begin(), models.end(), [](const QString &left, const QString &right)
     {
@@ -543,32 +673,60 @@ QJsonObject AcpRuntime::localModelObject(const QString &path) const
     QFileInfo info(path);
     const QString canonical = canonicalPath(path);
     const QString relative = ctx_.modelsDir.isEmpty() ? info.fileName() : QDir(ctx_.modelsDir).relativeFilePath(canonical);
+    QString currentPath = settings_.modelpath;
+    if (directRuntimeEnabled_ && runtimeCore_)
+    {
+        const RuntimeState state = runtimeCore_->stateSnapshot();
+        currentPath = state.currentModelPath.isEmpty() ? state.settings.modelpath : state.currentModelPath;
+    }
     QJsonObject model;
     model.insert(QStringLiteral("id"), relative.isEmpty() ? info.fileName() : relative);
     model.insert(QStringLiteral("object"), QStringLiteral("model"));
     model.insert(QStringLiteral("created"), static_cast<qint64>(info.lastModified().toSecsSinceEpoch()));
     model.insert(QStringLiteral("owned_by"), QStringLiteral("eva-acp"));
     model.insert(QStringLiteral("path"), canonical);
-    model.insert(QStringLiteral("current"), canonical == canonicalPath(settings_.modelpath));
+    model.insert(QStringLiteral("current"), !currentPath.isEmpty() && canonical == canonicalPath(currentPath));
     model.insert(QStringLiteral("source"), QStringLiteral("local"));
     return model;
 }
 
 QJsonObject AcpRuntime::remoteModelObject() const
 {
-    if (apis_.api_model.isEmpty()) return QJsonObject();
+    QString modelId = apis_.api_model;
+    QString endpoint = apis_.api_endpoint;
+    if (directRuntimeEnabled_ && runtimeCore_)
+    {
+        const RuntimeState state = runtimeCore_->stateSnapshot();
+        modelId = state.apis.api_model.isEmpty() ? state.currentModel : state.apis.api_model;
+        endpoint = state.apis.api_endpoint.isEmpty() ? state.endpoint : state.apis.api_endpoint;
+    }
+    if (modelId.isEmpty()) return QJsonObject();
     QJsonObject model;
-    model.insert(QStringLiteral("id"), apis_.api_model);
+    model.insert(QStringLiteral("id"), modelId);
     model.insert(QStringLiteral("object"), QStringLiteral("model"));
     model.insert(QStringLiteral("owned_by"), QStringLiteral("eva-acp"));
     model.insert(QStringLiteral("current"), true);
     model.insert(QStringLiteral("source"), QStringLiteral("remote"));
-    model.insert(QStringLiteral("endpoint"), apis_.api_endpoint);
+    model.insert(QStringLiteral("endpoint"), endpoint);
     return model;
 }
 
 QString AcpRuntime::currentModelId() const
 {
+    if (directRuntimeEnabled_ && runtimeCore_)
+    {
+        const RuntimeState state = runtimeCore_->stateSnapshot();
+        if (state.mode == RuntimeMode::Link)
+            return state.apis.api_model.isEmpty() ? state.currentModel : state.apis.api_model;
+        const QString runtimeModelPath = state.currentModelPath.isEmpty() ? state.settings.modelpath : state.currentModelPath;
+        if (!runtimeModelPath.isEmpty() && QFileInfo::exists(runtimeModelPath))
+        {
+            const QFileInfo info(runtimeModelPath);
+            const QString canonical = canonicalPath(runtimeModelPath);
+            const QString relative = ctx_.modelsDir.isEmpty() ? info.fileName() : QDir(ctx_.modelsDir).relativeFilePath(canonical);
+            return relative.isEmpty() ? info.fileName() : relative;
+        }
+    }
     if (isLinkMode()) return apis_.api_model;
     if (settings_.modelpath.isEmpty() || !QFileInfo::exists(settings_.modelpath)) return QString();
     const QFileInfo info(settings_.modelpath);
@@ -579,11 +737,22 @@ QString AcpRuntime::currentModelId() const
 
 bool AcpRuntime::linkModeEnabled() const
 {
+    if (directRuntimeEnabled_ && runtimeCore_)
+        return runtimeCore_->stateSnapshot().mode == RuntimeMode::Link;
     return isLinkMode();
+}
+
+bool AcpRuntime::directRuntimeEnabled() const
+{
+    return directRuntimeEnabled_ && runtimeCore_;
 }
 
 bool AcpRuntime::bridgeModeEnabled() const
 {
+    if (directRuntimeEnabled_)
+    {
+        return false;
+    }
     if (!bridgeClient_) return false;
     if (bridgeClient_->isConnected()) return true;
     QString errorMessage;
@@ -592,6 +761,17 @@ bool AcpRuntime::bridgeModeEnabled() const
 
 QString AcpRuntime::modelsEndpoint() const
 {
+    if (directRuntimeEnabled_ && runtimeCore_)
+    {
+        const RuntimeState state = runtimeCore_->stateSnapshot();
+        if (state.mode == RuntimeMode::Link)
+        {
+            const QString endpoint = state.apis.api_endpoint.isEmpty() ? state.endpoint : state.apis.api_endpoint;
+            const QUrl base = QUrl::fromUserInput(endpoint);
+            return OpenAiCompat::joinPath(base, OpenAiCompat::modelsPath(base)).toString();
+        }
+        return QString();
+    }
     if (isLinkMode())
     {
         const QUrl base = QUrl::fromUserInput(apis_.api_endpoint);
@@ -602,6 +782,18 @@ QString AcpRuntime::modelsEndpoint() const
 
 QString AcpRuntime::chatCompletionsEndpoint() const
 {
+    if (directRuntimeEnabled_ && runtimeCore_)
+    {
+        const RuntimeState state = runtimeCore_->stateSnapshot();
+        if (state.mode == RuntimeMode::Link)
+        {
+            const QString endpoint = state.apis.api_endpoint.isEmpty() ? state.endpoint : state.apis.api_endpoint;
+            const QUrl base = QUrl::fromUserInput(endpoint);
+            return OpenAiCompat::joinPath(base, OpenAiCompat::chatCompletionsPath(base)).toString();
+        }
+        return state.endpoint.isEmpty() ? backendEndpoint() + QStringLiteral("/v1/chat/completions")
+                                        : state.endpoint + QStringLiteral("/v1/chat/completions");
+    }
     if (isLinkMode())
     {
         const QUrl base = QUrl::fromUserInput(apis_.api_endpoint);
@@ -612,18 +804,46 @@ QString AcpRuntime::chatCompletionsEndpoint() const
 
 QString AcpRuntime::configuredApiKey() const
 {
+    if (directRuntimeEnabled_ && runtimeCore_)
+    {
+        const RuntimeState state = runtimeCore_->stateSnapshot();
+        return state.mode == RuntimeMode::Link ? state.apis.api_key : QString();
+    }
     return isLinkMode() ? apis_.api_key : QString();
 }
 
 QString AcpRuntime::configuredApiModel() const
 {
+    if (directRuntimeEnabled_ && runtimeCore_)
+    {
+        const RuntimeState state = runtimeCore_->stateSnapshot();
+        return state.mode == RuntimeMode::Link ? state.apis.api_model : QString();
+    }
     return isLinkMode() ? apis_.api_model : QString();
 }
 
 bool AcpRuntime::resetConversation(QString *errorMessage)
 {
+    if (directRuntimeEnabled_ && runtimeCore_)
+    {
+        RuntimeResetCommand command;
+        command.clearHistory = true;
+        return runtimeCore_->resetConversation(command, errorMessage);
+    }
     if (bridgeClient_ && bridgeClient_->resetConversation(errorMessage)) return true;
     if (errorMessage) *errorMessage = QStringLiteral("Bridge reset unavailable.");
+    return false;
+}
+
+bool AcpRuntime::stopRuntime(QString *errorMessage)
+{
+    if (directRuntimeEnabled_ && runtimeCore_)
+    {
+        runtimeCore_->stop();
+        return true;
+    }
+    if (bridgeClient_ && bridgeClient_->stopRuntime(errorMessage)) return true;
+    if (errorMessage) *errorMessage = QStringLiteral("Bridge stop unavailable.");
     return false;
 }
 
@@ -636,6 +856,153 @@ QJsonObject AcpRuntime::streamChatCompletion(const QJsonObject &request,
                                              const std::function<void(const QString &role, const QString &chunk)> &onChunk,
                                              QString *errorMessage)
 {
+    if (directRuntimeEnabled_ && runtimeCore_)
+    {
+        const RuntimeState runtimeState = runtimeCore_->stateSnapshot();
+        const bool linkMode = runtimeState.mode == RuntimeMode::Link;
+        const SETTINGS settings = runtimeState.initialized ? runtimeState.settings : settings_;
+        APIS runtimeApis = runtimeState.initialized ? runtimeState.apis : apis_;
+        QString runtimeEndpoint = runtimeState.endpoint.trimmed();
+        if (runtimeEndpoint.isEmpty()) runtimeEndpoint = backendEndpoint();
+
+        if (!linkMode && !runtimeState.backendReady)
+        {
+            if (errorMessage) *errorMessage = QStringLiteral("Local backend is not ready.");
+            return QJsonObject();
+        }
+
+        RequestSnapshot snapshot;
+        snapshot.apis = runtimeApis;
+        snapshot.apis.api_endpoint = linkMode && !runtimeApis.api_endpoint.trimmed().isEmpty()
+                                         ? runtimeApis.api_endpoint.trimmed()
+                                         : runtimeEndpoint;
+        if (snapshot.apis.api_model.trimmed().isEmpty())
+        {
+            snapshot.apis.api_model = currentModelId().isEmpty() ? QStringLiteral("default") : currentModelId();
+        }
+        const QString requestedModel = request.value(QStringLiteral("model")).toString().trimmed();
+        if (!requestedModel.isEmpty()) snapshot.apis.api_model = requestedModel;
+        snapshot.apis.is_local_backend = !linkMode;
+        if (!linkMode)
+        {
+            snapshot.apis.api_chat_endpoint = QStringLiteral(CHAT_ENDPOINT);
+            snapshot.apis.api_completion_endpoint = QStringLiteral(COMPLETION_ENDPOINT);
+        }
+
+        ENDPOINT_DATA endpoint;
+        endpoint.date_prompt.clear();
+        endpoint.messagesArray = request.value(QStringLiteral("messages")).toArray();
+        endpoint.tools = request.value(QStringLiteral("tools")).toArray();
+        endpoint.tool_call_mode = endpoint.tools.isEmpty() ? DEFAULT_TOOL_CALL_MODE : TOOL_CALL_FUNCTION;
+        endpoint.is_complete_state = false;
+        endpoint.temp = static_cast<float>(request.value(QStringLiteral("temperature")).toDouble(settings.temp));
+        endpoint.repeat = settings.repeat;
+        endpoint.top_k = settings.top_k;
+        endpoint.top_p = request.value(QStringLiteral("top_p")).toDouble(settings.hid_top_p);
+        endpoint.n_predict = request.value(QStringLiteral("max_completion_tokens")).toInt(settings.hid_npredict);
+        if (endpoint.n_predict <= 0)
+        {
+            endpoint.n_predict = request.value(QStringLiteral("max_tokens")).toInt(settings.hid_npredict);
+        }
+        endpoint.reasoning_effort = request.value(QStringLiteral("reasoning_effort")).toString(settings.reasoning_effort);
+        const QJsonValue stopValue = request.value(QStringLiteral("stop"));
+        if (stopValue.isArray())
+        {
+            const QJsonArray stops = stopValue.toArray();
+            for (const QJsonValue &value : stops)
+            {
+                if (value.isString()) endpoint.stopwords.append(value.toString());
+            }
+        }
+        else if (stopValue.isString())
+        {
+            endpoint.stopwords.append(stopValue.toString());
+        }
+
+        const quint64 turnId = static_cast<quint64>(QDateTime::currentMSecsSinceEpoch());
+        endpoint.turn_id = turnId;
+        snapshot.endpoint = endpoint;
+        snapshot.languageFlag = EVA_LANG_ZH;
+        snapshot.turnId = turnId;
+
+        QEventLoop loop;
+        QString assistantText;
+        QString runtimeError;
+        bool finished = false;
+        QMetaObject::Connection eventConn;
+        eventConn = connect(runtimeCore_, &EvaRuntime::runtimeEvent, this, [&](const RuntimeEvent &event)
+        {
+            if (event.state.activeTurnId != 0 && event.state.activeTurnId != turnId)
+            {
+                return;
+            }
+            if (event.type == RuntimeEventType::OutputChunk)
+            {
+                assistantText += event.text;
+                if (onChunk) onChunk(QStringLiteral("assistant"), event.text);
+            }
+            else if (event.type == RuntimeEventType::Error || event.type == RuntimeEventType::CommandRejected)
+            {
+                runtimeError = event.error.isEmpty() ? event.text : event.error;
+            }
+            else if (event.type == RuntimeEventType::TurnFinished)
+            {
+                finished = true;
+                loop.quit();
+            }
+        });
+
+        QString sendError;
+        if (!runtimeCore_->sendRequestSnapshot(snapshot, &sendError))
+        {
+            disconnect(eventConn);
+            if (errorMessage) *errorMessage = sendError;
+            return QJsonObject();
+        }
+
+        QTimer timeout;
+        timeout.setSingleShot(true);
+        connect(&timeout, &QTimer::timeout, &loop, [&]()
+        {
+            runtimeError = QStringLiteral("Runtime chat timed out.");
+            runtimeCore_->stop();
+            loop.quit();
+        });
+        timeout.start(qMax(60000, DEFAULT_NET_IDLE_TIMEOUT_MS * 3));
+        loop.exec();
+        disconnect(eventConn);
+
+        if (!finished && runtimeError.isEmpty())
+        {
+            runtimeError = QStringLiteral("Runtime chat ended before completion.");
+        }
+        if (!runtimeError.isEmpty() && assistantText.isEmpty())
+        {
+            if (errorMessage) *errorMessage = runtimeError;
+            return QJsonObject();
+        }
+
+        QJsonObject message;
+        message.insert(QStringLiteral("role"), QStringLiteral("assistant"));
+        message.insert(QStringLiteral("content"), assistantText);
+
+        QJsonObject choice;
+        choice.insert(QStringLiteral("index"), 0);
+        choice.insert(QStringLiteral("message"), message);
+        choice.insert(QStringLiteral("finish_reason"), runtimeError.isEmpty() ? QStringLiteral("stop") : QStringLiteral("error"));
+
+        QJsonArray choices;
+        choices.append(choice);
+
+        QJsonObject response;
+        response.insert(QStringLiteral("id"), QStringLiteral("chatcmpl-runtime"));
+        response.insert(QStringLiteral("object"), QStringLiteral("chat.completion"));
+        response.insert(QStringLiteral("created"), static_cast<qint64>(QDateTime::currentSecsSinceEpoch()));
+        response.insert(QStringLiteral("model"), snapshot.apis.api_model);
+        response.insert(QStringLiteral("choices"), choices);
+        return response;
+    }
+
     if (bridgeClient_)
     {
         QString text;
@@ -715,4 +1082,82 @@ void AcpRuntime::refreshBackendProbe()
     DeviceManager::programPath(QStringLiteral("llama-server-main"));
     const QString lastResolved = DeviceManager::lastResolvedDeviceFor(QStringLiteral("llama-server-main"));
     if (!lastResolved.isEmpty()) backendResolved_ = lastResolved;
+}
+
+void AcpRuntime::syncRuntimeFromCurrentState()
+{
+    if (!directRuntimeEnabled_ || !runtimeCore_) return;
+    QString runtimeError;
+    if (isLinkMode())
+    {
+        RuntimeConnectRemoteCommand command;
+        command.endpoint = apis_.api_endpoint;
+        command.apiKey = apis_.api_key;
+        command.model = apis_.api_model;
+        command.sampling = settings_;
+        if (!runtimeCore_->connectRemote(command, &runtimeError))
+        {
+            lastError_ = runtimeError;
+        }
+        return;
+    }
+
+    if (settings_.modelpath.isEmpty() || !QFileInfo::exists(settings_.modelpath))
+    {
+        runtimeCore_->updateBackendStatus(BackendLifecycleState::Stopped,
+                                          false,
+                                          backendEndpoint(),
+                                          backendResolved_,
+                                          settings_.modelpath.isEmpty() ? QString() : QStringLiteral("Configured model path does not exist: %1").arg(settings_.modelpath));
+        return;
+    }
+
+    RuntimeLoadLocalCommand command;
+    command.modelPath = settings_.modelpath;
+    command.mmprojPath = settings_.mmprojpath;
+    command.loraPath = settings_.lorapath;
+    command.backendChoice = backendChoice_;
+    command.port = backendPort_;
+    command.settings = settings_;
+    if (!runtimeCore_->loadLocal(command, &runtimeError))
+    {
+        lastError_ = runtimeError;
+    }
+    runtimeCore_->updateBackendStatus(backendReady_ ? BackendLifecycleState::Running : BackendLifecycleState::Stopped,
+                                      backendReady_,
+                                      backendEndpoint(),
+                                      backendResolved_,
+                                      lastError_);
+}
+
+QJsonObject AcpRuntime::runtimeStatePayload() const
+{
+    const RuntimeState state = runtimeCore_->stateSnapshot();
+    const bool runtimeLinkMode = state.mode == RuntimeMode::Link;
+    const SETTINGS settings = state.initialized ? state.settings : settings_;
+    const APIS stateApis = state.initialized ? state.apis : apis_;
+    QJsonObject payload = runtimeStateToJson(state);
+    payload.insert(QStringLiteral("state_source"), QStringLiteral("direct_runtime"));
+    payload.insert(QStringLiteral("direct_runtime"), true);
+    payload.insert(QStringLiteral("state"), runtimePhaseName(state.phase));
+    payload.insert(QStringLiteral("ready"), state.backendReady);
+    payload.insert(QStringLiteral("current_model"), state.currentModel.isEmpty() ? currentModelId() : state.currentModel);
+    payload.insert(QStringLiteral("current_model_path"), runtimeLinkMode ? QString() : (state.currentModelPath.isEmpty() ? settings.modelpath : state.currentModelPath));
+    payload.insert(QStringLiteral("backend_choice"), state.backendChoice.isEmpty() ? (runtimeLinkMode ? QStringLiteral("link") : backendChoice_) : state.backendChoice);
+    payload.insert(QStringLiteral("backend_resolved"), state.backendResolved.isEmpty() ? (runtimeLinkMode ? QStringLiteral("remote") : backendResolved_) : state.backendResolved);
+    payload.insert(QStringLiteral("available_backends"), runtimeLinkMode ? QJsonArray() : QJsonArray::fromStringList(DeviceManager::availableBackends()));
+    payload.insert(QStringLiteral("backend_program_path"), runtimeLinkMode ? QString() : DeviceManager::programPath(QStringLiteral("llama-server-main")));
+    payload.insert(QStringLiteral("server_running"), !runtimeLinkMode && serverManager_ && serverManager_->isRunning());
+    payload.insert(QStringLiteral("port"), runtimeLinkMode ? QString() : backendPort_);
+    payload.insert(QStringLiteral("nctx"), settings.nctx);
+    payload.insert(QStringLiteral("ngl"), settings.ngl);
+    payload.insert(QStringLiteral("nthread"), settings.nthread);
+    payload.insert(QStringLiteral("parallel"), settings.hid_parallel);
+    payload.insert(QStringLiteral("mmproj_path"), settings.mmprojpath);
+    payload.insert(QStringLiteral("lora_path"), settings.lorapath);
+    payload.insert(QStringLiteral("api_endpoint"), runtimeLinkMode ? stateApis.api_endpoint : QString());
+    payload.insert(QStringLiteral("api_model"), runtimeLinkMode ? stateApis.api_model : QString());
+    payload.insert(QStringLiteral("last_error"), lastError_.isEmpty() ? state.lastError : lastError_);
+    payload.insert(QStringLiteral("last_output_tail"), lastOutput_);
+    return payload;
 }

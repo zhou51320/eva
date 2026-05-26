@@ -36,6 +36,11 @@ AcpBridgeClient::AcpBridgeClient(QObject *parent)
             latestSnapshot_ = payload.value(QStringLiteral("snapshot")).toObject();
         }
         if (!chatWaiting_) return;
+        const qint64 eventTurnId = payload.value(QStringLiteral("turn_id")).toVariant().toLongLong();
+        if (chatTurnId_ > 0 && eventTurnId > 0 && eventTurnId != chatTurnId_)
+        {
+            return;
+        }
         if (type == QStringLiteral("output"))
         {
             const QString role = payload.value(QStringLiteral("role")).toString();
@@ -48,10 +53,13 @@ AcpBridgeClient::AcpBridgeClient(QObject *parent)
         }
         if (type == QStringLiteral("ui_state"))
         {
+            const QJsonObject snapshot = payload.value(QStringLiteral("snapshot")).toObject();
+            if (!snapshot.isEmpty()) latestSnapshot_ = snapshot;
             const QString phase = payload.value(QStringLiteral("phase")).toString();
-            if (phase == QStringLiteral("normal") && chatLoop_)
+            if (phase == QStringLiteral("normal"))
             {
-                chatLoop_->quit();
+                chatFinished_ = true;
+                if (chatLoop_) chatLoop_->quit();
             }
             return;
         }
@@ -118,6 +126,11 @@ bool AcpBridgeClient::resetConversation(QString *errorMessage, int timeoutMs)
     return !request(QStringLiteral("bridge_reset"), QJsonObject(), errorMessage, timeoutMs).isEmpty();
 }
 
+bool AcpBridgeClient::stopRuntime(QString *errorMessage, int timeoutMs)
+{
+    return !request(QStringLiteral("bridge_stop"), QJsonObject(), errorMessage, timeoutMs).isEmpty();
+}
+
 bool AcpBridgeClient::sendText(const QString &text, ChatResult *result, QString *errorMessage, int timeoutMs)
 {
     return sendTextStreaming(text, std::function<void(const QString &, const QString &)>(), result, errorMessage, timeoutMs);
@@ -135,16 +148,11 @@ bool AcpBridgeClient::sendTextStreaming(const QString &text,
         return false;
     }
 
-    QJsonObject payload;
-    payload.insert(QStringLiteral("text"), text);
-    if (request(QStringLiteral("bridge_send"), payload, errorMessage, 3000).isEmpty())
-    {
-        return false;
-    }
-
     chatAssistantText_.clear();
     chatReasoningText_.clear();
     lastError_.clear();
+    chatFinished_ = false;
+    chatTurnId_ = 0;
     chatWaiting_ = true;
 
     QMetaObject::Connection chunkConn;
@@ -160,13 +168,37 @@ bool AcpBridgeClient::sendTextStreaming(const QString &text,
         });
     }
 
+    QJsonObject payload;
+    payload.insert(QStringLiteral("text"), text);
+    const QJsonObject sendResponse = request(QStringLiteral("bridge_send"), payload, errorMessage, 3000);
+    if (sendResponse.isEmpty())
+    {
+        chatWaiting_ = false;
+        if (chunkConn) disconnect(chunkConn);
+        return false;
+    }
+    const QJsonObject responseState = sendResponse.value(QStringLiteral("state")).toObject();
+    const QJsonObject responseSnapshot = responseState.value(QStringLiteral("snapshot")).toObject();
+    if (!responseSnapshot.isEmpty())
+    {
+        latestSnapshot_ = responseSnapshot;
+        chatTurnId_ = responseSnapshot.value(QStringLiteral("active_turn_id")).toVariant().toLongLong();
+        if (chatTurnId_ <= 0)
+            chatTurnId_ = responseSnapshot.value(QStringLiteral("turn_id")).toVariant().toLongLong();
+    }
+
     QEventLoop loop;
     QTimer timer;
     timer.setSingleShot(true);
     chatLoop_ = &loop;
+    bool timedOut = false;
     connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
+    connect(&timer, &QTimer::timeout, &loop, [&]()
+    {
+        timedOut = true;
+    });
     timer.start(timeoutMs);
-    loop.exec();
+    if (!chatFinished_) loop.exec();
     chatLoop_ = nullptr;
     chatWaiting_ = false;
     if (chunkConn) disconnect(chunkConn);
@@ -183,6 +215,11 @@ bool AcpBridgeClient::sendTextStreaming(const QString &text,
     if (chatAssistantText_.isEmpty() && !bridgeError.isEmpty())
     {
         if (errorMessage) *errorMessage = bridgeError;
+        return false;
+    }
+    if (chatAssistantText_.isEmpty() && timedOut)
+    {
+        if (errorMessage) *errorMessage = QStringLiteral("Bridge chat timed out before a final UI state was received.");
         return false;
     }
 

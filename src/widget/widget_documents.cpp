@@ -79,6 +79,7 @@ void Widget::updateKvBarUi()
     ui->kv_bar->setCenterText(QString());
     ui->kv_bar->setToolTip(jtr("kv bar tooltip").arg(used).arg(capLabel));
     broadcastControlKv(used, cap, percent);
+    syncRuntimeSessionMirror(false);
 }
 
 void Widget::recv_prompt_baseline(int tokens)
@@ -93,7 +94,7 @@ void Widget::recv_prompt_baseline(int tokens)
     // Always treat provider usage as the absolute prompt baseline for this turn.
     kvPromptTokensTurn_ = promptTokens;
     kvUsedBeforeTurn_ = promptTokens;
-    if (!turnActive_) turnActive_ = true;
+    projectRuntimeTurnObserved();
     kvTokensTurn_ = kvPromptTokensTurn_ + qMax(0, kvStreamedTurn_);
     kvUsed_ = kvPromptTokensTurn_ + qMax(0, kvStreamedTurn_);
     sawPromptPast_ = true;
@@ -133,7 +134,7 @@ void Widget::recv_turn_counters(int cacheTokens, int promptTokens, int predicted
     kvTokensTurn_ = prompt + generated;
     kvUsedBeforeTurn_ = cache + prompt;
     kvUsed_ = total;
-    if (!turnActive_) turnActive_ = true;
+    projectRuntimeTurnObserved();
     sawPromptPast_ = true;
     // if (ui_mode == LINK_MODE)
     // {
@@ -155,10 +156,10 @@ void Widget::recv_kv_from_net(int usedTokens)
     }
     const int newStream = qMax(0, usedTokens);
     // Approximate KV usage accumulation during streaming tokens from xNet.
-    if (ui_mode == LINK_MODE)
+    if (runtimeModeForUi() == RuntimeMode::Link)
     {
-        // In LINK mode, we may not have server logs; accept updates regardless of turnActive_
-        if (!turnActive_) turnActive_ = true;
+        // In LINK mode, we may not have server logs; accept updates regardless of backend turn logs.
+        projectRuntimeTurnObserved();
         kvStreamedTurn_ = newStream;
         kvTokensTurn_ = kvPromptTokensTurn_ + kvStreamedTurn_;
         kvUsed_ = qMax(0, kvUsedBeforeTurn_ + kvStreamedTurn_);
@@ -175,7 +176,7 @@ void Widget::recv_kv_from_net(int usedTokens)
         return;
     }
     // LOCAL mode
-    if (!turnActive_) return;
+    if (!runtimeTurnActiveForUi()) return;
     // 若已从 llama-server 日志拿到 stop processing 的最终 n_tokens/n_past，则以其为准，避免流式近似覆盖最终值
     if (sawFinalPast_) return;
     kvStreamedTurn_ = newStream;
@@ -193,6 +194,7 @@ void Widget::onSlotAssigned(int slotId)
     currentSlotId_ = slotId;
     if (history_) history_->updateSlotId(slotId);
     reflash_state(QString("net:slot id=%1").arg(slotId), SIGNAL_SIGNAL);
+    syncRuntimeSessionMirror(false);
 }
 
 void Widget::recv_reasoning_tokens(int tokens)
@@ -210,7 +212,7 @@ void Widget::recv_reasoning_tokens(int tokens)
     // 这些 token 通常不会回写到最终对话内容，但会计入本轮推理/计费 token。
     // 当前 KV 统计选择“包含思考 token”，用来观察实际推理负载。
     // 这里打印“收到上报”的时机与数值，便于你对齐本轮 KV 汇总日志。
-    if (ui_mode == LINK_MODE && sanitized > 0 && sanitized != previous)
+    if (runtimeModeForUi() == RuntimeMode::Link && sanitized > 0 && sanitized != previous)
     {
         FlowTracer::log(
             FlowChannel::Session,
@@ -222,8 +224,9 @@ void Widget::recv_reasoning_tokens(int tokens)
                 .arg(kvPromptTokensTurn_)
                 .arg(kvStreamedTurn_)
                 .arg(kvTokensTurn_),
-            activeTurnId_);
+            runtimeActiveTurnIdForUi());
     }
+    syncRuntimeSessionMirror(false);
 }
 
 void Widget::onServerOutput(const QString &chunk)
@@ -251,13 +254,14 @@ void Widget::onServerStartFailed(const QString &reason)
 
 void Widget::unlockLoad()
 {
-    if (ui_SETTINGS.ngl < ui_maxngl)
+    const SETTINGS settings = sessionSettingsSnapshot();
+    if (settings.ngl < ui_maxngl)
     {
         reflash_state("ui:" + jtr("ngl tips"), USUAL_SIGNAL);
     }
 
     reflash_state("ui:" + jtr("load model") + jtr("over") + " " + QString::number(load_time, 'f', 2) + " s " + jtr("right click and check model log"), SUCCESS_SIGNAL);
-    if (ui_SETTINGS.ngl > 0)
+    if (settings.ngl > 0)
     {
         setBaseWindowIcon(QIcon(":/logo/eva.png"));
     }
@@ -265,10 +269,10 @@ void Widget::unlockLoad()
     {
         setBaseWindowIcon(QIcon(":/logo/eva.png"));
     }
-    EVA_title = jtr("current model") + " " + ui_SETTINGS.modelpath.split("/").last();
+    EVA_title = jtr("current model") + " " + resolvedModelLabelForUi();
     this->setWindowTitle(EVA_title);
     trayIcon->setToolTip(EVA_title);
-    ui->cpu_bar->setToolTip(jtr("nthread/maxthread") + "  " + QString::number(ui_SETTINGS.nthread) + "/" + QString::number(max_thread));
+    ui->cpu_bar->setToolTip(jtr("nthread/maxthread") + "  " + QString::number(settings.nthread) + "/" + QString::number(max_thread));
     auto_save_user();
     ui_state_normal();
     if (skipUnlockLoadIntro_)

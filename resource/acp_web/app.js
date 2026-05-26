@@ -4,6 +4,7 @@ const state = {
   backendState: null,
   models: [],
   streaming: false,
+  currentChatAbort: null,
 };
 
 const els = {
@@ -22,6 +23,9 @@ const els = {
   messageTemplate: document.getElementById('message-template'),
   sessionList: document.getElementById('session-list'),
   healthChip: document.getElementById('health-chip'),
+  brandSubtitle: document.getElementById('brand-subtitle'),
+  sourceBadgeText: document.getElementById('source-badge-text'),
+  runtimeSummary: document.getElementById('runtime-summary'),
   heroMode: document.getElementById('hero-mode'),
   heroModel: document.getElementById('hero-model'),
   heroEndpoint: document.getElementById('hero-endpoint'),
@@ -41,6 +45,7 @@ const els = {
   modelsList: document.getElementById('models-list'),
   chatInput: document.getElementById('chat-input'),
   streamToggle: document.getElementById('stream-toggle'),
+  stopChat: document.getElementById('stop-chat'),
   sendChat: document.getElementById('send-chat'),
   refreshAll: document.getElementById('refresh-all'),
   applyLoad: document.getElementById('apply-load'),
@@ -68,6 +73,21 @@ function saveSessions() {
 
 async function resetRuntimeConversation() {
   const response = await fetch('/api/runtime/reset', { method: 'POST' });
+  const text = await response.text();
+  let json = {};
+  try {
+    json = text ? JSON.parse(text) : {};
+  } catch (_) {
+    json = { raw: text };
+  }
+  if (!response.ok) {
+    throw new Error(json.error || json.details || text || `HTTP ${response.status}`);
+  }
+  return json;
+}
+
+async function stopRuntimeTurn() {
+  const response = await fetch('/api/runtime/stop', { method: 'POST' });
   const text = await response.text();
   let json = {};
   try {
@@ -157,8 +177,13 @@ function renderBackendState() {
   const mode = info.mode || '-';
   const endpoint = info.endpoint || info.api_endpoint || '-';
   const model = info.current_model || info.api_model || '-';
+  const source = info.state_source || (info.direct_runtime ? 'direct_runtime' : (info.bridge_available ? 'bridge' : 'legacy_acp'));
+  const sourceLabel = source === 'direct_runtime' ? '直接运行层' : (source === 'bridge' ? '主程序桥接' : 'ACP 降级');
 
-  els.healthChip.textContent = `${info.state || 'unknown'} · ${info.ready ? 'ready' : 'idle'}`;
+  els.healthChip.textContent = `${sourceLabel} · ${info.state || 'unknown'} · ${info.ready ? 'ready' : 'idle'}`;
+  if (els.brandSubtitle) els.brandSubtitle.textContent = source === 'direct_runtime' ? 'ACP runtime console' : 'ACP bridge console';
+  if (els.sourceBadgeText) els.sourceBadgeText.textContent = source === 'direct_runtime' ? '通过 EvaRuntime 无窗口运行' : (source === 'bridge' ? '通过 EVA 主程序桥接运行' : 'ACP 本地降级运行');
+  if (els.runtimeSummary) els.runtimeSummary.textContent = source === 'direct_runtime' ? '统一查看当前会话、模型与运行时状态，并通过 EVA 无窗口运行层执行装载与对话。' : '统一查看当前会话、模型与运行时状态；当前由桥接或 ACP 降级路径执行。';
   els.heroMode.textContent = mode;
   els.heroModel.textContent = model;
   els.heroEndpoint.textContent = endpoint;
@@ -177,6 +202,8 @@ function renderBackendState() {
     ['当前模式', mode],
     ['当前模型', model],
     ['端点', endpoint],
+    ['状态源', sourceLabel],
+    ['桥接', info.bridge_available ? '可用' : '未使用'],
     ['后端选择', info.backend_choice || '-'],
     ['后端解析', info.backend_resolved || '-'],
     ['线程', info.nthread || '-'],
@@ -328,6 +355,17 @@ function updateLastAssistant(content, meta) {
   renderMessages();
 }
 
+function normalizeErrorText(raw, fallback) {
+  const text = String(raw || '').trim();
+  if (!text) return fallback;
+  try {
+    const parsed = JSON.parse(text);
+    return parsed.error || parsed.details || parsed.message || text;
+  } catch (_) {
+    return text;
+  }
+}
+
 async function sendChat() {
   if (state.streaming) return;
   const input = els.chatInput.value.trim();
@@ -340,10 +378,12 @@ async function sendChat() {
   messages.push({ role: 'user', content: input });
 
   addMessage('user', input, new Date().toLocaleTimeString());
-  addMessage('assistant', '', '等待响应');
+  addMessage('assistant', '...', '等待响应');
   els.chatInput.value = '';
   state.streaming = true;
+  state.currentChatAbort = new AbortController();
   els.sendChat.disabled = true;
+  if (els.stopChat) els.stopChat.disabled = false;
 
   const payload = {
     messages,
@@ -361,17 +401,19 @@ async function sendChat() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
+      signal: state.currentChatAbort.signal,
     });
 
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(errorText || `HTTP ${response.status}`);
+      throw new Error(normalizeErrorText(errorText, `HTTP ${response.status}`));
     }
 
     if (!els.streamToggle.checked) {
+      updateLastAssistant('...', '接收完整响应');
       const data = await response.json();
       const content = data.choices?.[0]?.message?.content || '';
-      updateLastAssistant(content, '完成');
+      updateLastAssistant(content || '(空响应)', content ? '完成' : '完成 · 空响应');
       return;
     }
 
@@ -380,10 +422,12 @@ async function sendChat() {
     let buffer = '';
     let answer = '';
     let reasoning = '';
+    let streamFailed = false;
 
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
+      if (streamFailed) break;
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split(/\r?\n/);
       buffer = lines.pop() || '';
@@ -394,22 +438,36 @@ async function sendChat() {
         try {
           const data = JSON.parse(payloadText);
           const delta = data.choices?.[0]?.delta || {};
+          if (data.error) {
+            throw new Error(String(data.error));
+          }
           if (typeof delta.content === 'string') answer += delta.content;
           if (typeof delta.reasoning === 'string') reasoning += delta.reasoning;
           if (typeof delta.reasoning_content === 'string') reasoning += delta.reasoning_content;
           if (!delta.content && data.choices?.[0]?.message?.content) answer += data.choices[0].message.content;
-          const meta = reasoning ? `推理中 · ${reasoning.length} chars` : '流式输出';
-          updateLastAssistant(answer, meta);
-        } catch (_) {}
+          const meta = reasoning ? `流式输出 · 推理 ${reasoning.length} chars` : '流式输出';
+          updateLastAssistant(answer || '...', meta);
+        } catch (error) {
+          streamFailed = true;
+          updateLastAssistant(`请求失败：${error.message}`, '错误');
+          break;
+        }
       }
     }
 
+    if (streamFailed) return;
     updateLastAssistant(answer || '(空响应)', reasoning ? '完成 · 含推理内容' : '完成');
   } catch (error) {
-    updateLastAssistant(`请求失败：${error.message}`, '错误');
+    if (error.name === 'AbortError') {
+      updateLastAssistant('已停止。', '停止');
+    } else {
+      updateLastAssistant(`请求失败：${error.message}`, '错误');
+    }
   } finally {
     state.streaming = false;
+    state.currentChatAbort = null;
     els.sendChat.disabled = false;
+    if (els.stopChat) els.stopChat.disabled = true;
     refreshAll();
   }
 }
@@ -437,6 +495,16 @@ function bindEvents() {
   els.applyLoad.addEventListener('click', applyLoad);
   els.refreshAll.addEventListener('click', refreshAll);
   els.sendChat.addEventListener('click', sendChat);
+  els.stopChat?.addEventListener('click', async () => {
+    if (state.currentChatAbort) state.currentChatAbort.abort();
+    try {
+      await stopRuntimeTurn();
+    } catch (error) {
+      updateLastAssistant(`停止失败：${error.message}`, '错误');
+    } finally {
+      await refreshAll();
+    }
+  });
   els.newChat.addEventListener('click', async () => {
     try {
       await resetRuntimeConversation();

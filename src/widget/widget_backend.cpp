@@ -1,5 +1,6 @@
 #include "widget.h"
 #include "ui_widget.h"
+#include "runtime/eva_runtime.h"
 #include "service/backend/backend_coordinator.h"
 #include "../utils/perf_metrics.h"
 #include "../utils/startuplogger.h"
@@ -73,7 +74,7 @@ void Widget::recv_gpu_status(float vmem, float vramp, float vcore, float vfree_)
             ui_SETTINGS.ngl = 0; // 不足则先走纯CPU/少量 offload
         }
         // 应用新设置并按需重启本地服务
-        if (ui_mode == LOCAL_MODE) ensureLocalServer();
+        if (runtimeModeForUi() == RuntimeMode::Local) ensureLocalServer();
     }
     broadcastControlMonitor();
 }
@@ -118,13 +119,13 @@ void Widget::setBackendLifecycleState(BackendLifecycleState state, const QString
                         .arg(backendLifecycleStateName(oldState),
                              backendLifecycleStateName(state),
                              reason.isEmpty() ? QStringLiteral("-") : reason),
-                    activeTurnId_);
+                    runtimeActiveTurnIdForUi());
     if (!transitionAllowed)
     {
         FlowTracer::log(FlowChannel::Backend,
                         QStringLiteral("backend: lifecycle warning invalid transition %1 -> %2")
                             .arg(backendLifecycleStateName(oldState), backendLifecycleStateName(state)),
-                        activeTurnId_);
+                        runtimeActiveTurnIdForUi());
     }
     {
         QJsonObject fields;
@@ -132,8 +133,17 @@ void Widget::setBackendLifecycleState(BackendLifecycleState state, const QString
         fields.insert(QStringLiteral("to"), backendLifecycleStateName(state));
         fields.insert(QStringLiteral("reason"), reason);
         fields.insert(QStringLiteral("allowed"), transitionAllowed);
-        fields.insert(QStringLiteral("turn_id"), static_cast<qint64>(activeTurnId_));
+        fields.insert(QStringLiteral("turn_id"), static_cast<qint64>(runtimeActiveTurnIdForUi()));
         recordPerfEvent(QStringLiteral("backend.lifecycle"), fields);
+    }
+
+    const RuntimeState runtimeState = runtimeStateSnapshotForSession();
+    if (runtime_ && (!runtimeState.initialized || runtimeState.mode == RuntimeMode::Local))
+    {
+        const bool ready = (state == BackendLifecycleState::Running);
+        const QString endpoint = formatLocalEndpoint(activeServerHost_, activeServerPort_);
+        const QString error = (state == BackendLifecycleState::Error) ? reason : QString();
+        runtime_->updateBackendStatus(state, ready, endpoint, runtimeDeviceBackend_, error);
     }
 
     // 生命周期阶段耗时：记录 starting/restarting/waking -> terminal(running/error/stopped/sleeping) 的持续时间。
@@ -155,7 +165,7 @@ void Widget::setBackendLifecycleState(BackendLifecycleState state, const QString
         fields.insert(QStringLiteral("to"), backendLifecycleStateName(state));
         fields.insert(QStringLiteral("reason"), reason);
         fields.insert(QStringLiteral("allowed"), transitionAllowed);
-        fields.insert(QStringLiteral("turn_id"), static_cast<qint64>(activeTurnId_));
+        fields.insert(QStringLiteral("turn_id"), static_cast<qint64>(runtimeActiveTurnIdForUi()));
         PerfMetrics::recordDuration(applicationDirPath, QStringLiteral("backend.lifecycle.duration"), elapsedMs, fields);
         backendLifecycleTimerActive_ = false;
     }
@@ -183,9 +193,9 @@ void Widget::beginTurnPerfSample()
     turnPerfTimer_.start();
     turnPerfTimerActive_ = true;
     QJsonObject fields;
-    fields.insert(QStringLiteral("mode"), ui_mode == LINK_MODE ? QStringLiteral("link") : QStringLiteral("local"));
-    fields.insert(QStringLiteral("state"), ui_state == CHAT_STATE ? QStringLiteral("chat") : QStringLiteral("complete"));
-    fields.insert(QStringLiteral("turn_id"), static_cast<qint64>(activeTurnId_));
+    fields.insert(QStringLiteral("mode"), runtimeModeName(runtimeModeForUi()));
+    fields.insert(QStringLiteral("state"), conversationModeName(runtimeConversationModeForUi()));
+    fields.insert(QStringLiteral("turn_id"), static_cast<qint64>(runtimeActiveTurnIdForUi()));
     recordPerfEvent(QStringLiteral("turn.begin"), fields);
 }
 
@@ -198,12 +208,13 @@ void Widget::finishTurnPerfSample(const QString &reason, bool success)
     QJsonObject fields;
     fields.insert(QStringLiteral("reason"), reason);
     fields.insert(QStringLiteral("success"), success);
-    fields.insert(QStringLiteral("mode"), ui_mode == LINK_MODE ? QStringLiteral("link") : QStringLiteral("local"));
-    fields.insert(QStringLiteral("turn_id"), static_cast<qint64>(activeTurnId_));
-    fields.insert(QStringLiteral("kv_used"), kvUsed_);
-    fields.insert(QStringLiteral("prompt_tokens"), kvPromptTokensTurn_);
-    fields.insert(QStringLiteral("stream_tokens"), kvStreamedTurn_);
-    fields.insert(QStringLiteral("reasoning_tokens"), lastReasoningTokens_);
+    fields.insert(QStringLiteral("mode"), runtimeModeName(runtimeModeForUi()));
+    fields.insert(QStringLiteral("state"), conversationModeName(runtimeConversationModeForUi()));
+    fields.insert(QStringLiteral("turn_id"), static_cast<qint64>(runtimeActiveTurnIdForUi()));
+    fields.insert(QStringLiteral("kv_used"), runtimeKvUsedForUi());
+    fields.insert(QStringLiteral("prompt_tokens"), runtimePromptTokensForUi());
+    fields.insert(QStringLiteral("stream_tokens"), runtimeStreamedTokensForUi());
+    fields.insert(QStringLiteral("reasoning_tokens"), runtimeReasoningTokensForUi());
     PerfMetrics::recordDuration(applicationDirPath, QStringLiteral("turn.finish"), elapsedMs, fields);
 }
 
@@ -393,5 +404,3 @@ bool Widget::triggerBackendFallback(const QString &failedBackend, const QString 
 {
     return backendCoordinator_ ? backendCoordinator_->triggerBackendFallback(failedBackend, reasonTag) : false;
 }
-
-

@@ -1,8 +1,10 @@
 #pragma once
 
 #include <QDateTime>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QString>
+#include <QStringList>
 
 #include "app/app_context.h"
 #include "xconfig.h"
@@ -67,6 +69,7 @@ struct RuntimeState
     RuntimeMode mode = RuntimeMode::Local;
     ConversationMode conversationMode = ConversationMode::Chat;
     RuntimePhase phase = RuntimePhase::Unloaded;
+    QString currentTask;
 
     QString stateSource = QStringLiteral("runtime");
     QString currentModel;
@@ -82,16 +85,32 @@ struct RuntimeState
     int slotId = -1;
 
     int kvUsed = 0;
+    int kvUsedBeforeTurn = 0;
+    int kvStreamedTurn = 0;
+    int kvTurnTokens = 0;
     int kvCapacity = 0;
     int kvPercent = 0;
     int promptTokens = 0;
     int generatedTokens = 0;
     int reasoningTokens = 0;
+    int messageCount = 0;
+    QString systemPrompt;
+    QStringList stopwords;
+    int toolCallMode = DEFAULT_TOOL_CALL_MODE;
+    QString pendingToolResult;
+    QString pendingToolName;
+    QString pendingToolCallId;
+    QString lastToolCallName;
+    bool compactionActive = false;
+    bool compactionQueued = false;
+    QString historySessionId;
+    QJsonArray messages;
 
     QString lastError;
     QDateTime updatedAt;
     AppContext context;
     SETTINGS settings;
+    COMPACTION_SETTINGS compactionSettings;
     APIS apis;
 };
 
@@ -102,6 +121,7 @@ inline QJsonObject runtimeStateToJson(const RuntimeState &state)
     obj.insert(QStringLiteral("mode"), runtimeModeName(state.mode));
     obj.insert(QStringLiteral("conversation_mode"), conversationModeName(state.conversationMode));
     obj.insert(QStringLiteral("phase"), runtimePhaseName(state.phase));
+    obj.insert(QStringLiteral("current_task"), state.currentTask);
     obj.insert(QStringLiteral("state_source"), state.stateSource);
     obj.insert(QStringLiteral("current_model"), state.currentModel);
     obj.insert(QStringLiteral("current_model_path"), state.currentModelPath);
@@ -110,6 +130,19 @@ inline QJsonObject runtimeStateToJson(const RuntimeState &state)
     obj.insert(QStringLiteral("backend_resolved"), state.backendResolved);
     obj.insert(QStringLiteral("backend_lifecycle"), backendLifecycleStateName(state.backendLifecycle));
     obj.insert(QStringLiteral("backend_ready"), state.backendReady);
+    obj.insert(QStringLiteral("settings_model_path"), state.settings.modelpath);
+    obj.insert(QStringLiteral("settings_mmproj_path"), state.settings.mmprojpath);
+    obj.insert(QStringLiteral("settings_lora_path"), state.settings.lorapath);
+    obj.insert(QStringLiteral("nctx"), state.settings.nctx);
+    obj.insert(QStringLiteral("ngl"), state.settings.ngl);
+    obj.insert(QStringLiteral("nthread"), state.settings.nthread);
+    obj.insert(QStringLiteral("parallel"), state.settings.hid_parallel);
+    obj.insert(QStringLiteral("temperature"), state.settings.temp);
+    obj.insert(QStringLiteral("repeat"), state.settings.repeat);
+    obj.insert(QStringLiteral("top_k"), state.settings.top_k);
+    obj.insert(QStringLiteral("top_p"), state.settings.hid_top_p);
+    obj.insert(QStringLiteral("n_predict"), state.settings.hid_npredict);
+    obj.insert(QStringLiteral("reasoning_effort"), state.settings.reasoning_effort);
     obj.insert(QStringLiteral("api_endpoint"), state.apis.api_endpoint);
     obj.insert(QStringLiteral("api_model"), state.apis.api_model);
     obj.insert(QStringLiteral("api_chat_endpoint"), state.apis.api_chat_endpoint);
@@ -119,11 +152,29 @@ inline QJsonObject runtimeStateToJson(const RuntimeState &state)
     obj.insert(QStringLiteral("active_turn_id"), QString::number(state.activeTurnId));
     obj.insert(QStringLiteral("slot_id"), state.slotId);
     obj.insert(QStringLiteral("kv_used"), state.kvUsed);
+    obj.insert(QStringLiteral("kv_used_before_turn"), state.kvUsedBeforeTurn);
+    obj.insert(QStringLiteral("kv_streamed_turn"), state.kvStreamedTurn);
+    obj.insert(QStringLiteral("kv_turn_tokens"), state.kvTurnTokens);
     obj.insert(QStringLiteral("kv_capacity"), state.kvCapacity);
     obj.insert(QStringLiteral("kv_percent"), state.kvPercent);
     obj.insert(QStringLiteral("prompt_tokens"), state.promptTokens);
     obj.insert(QStringLiteral("generated_tokens"), state.generatedTokens);
     obj.insert(QStringLiteral("reasoning_tokens"), state.reasoningTokens);
+    obj.insert(QStringLiteral("message_count"), state.messageCount);
+    obj.insert(QStringLiteral("system_prompt_length"), state.systemPrompt.size());
+    obj.insert(QStringLiteral("stopwords"), QJsonArray::fromStringList(state.stopwords));
+    obj.insert(QStringLiteral("tool_call_mode"), state.toolCallMode);
+    obj.insert(QStringLiteral("pending_tool_result_length"), state.pendingToolResult.size());
+    obj.insert(QStringLiteral("pending_tool_name"), state.pendingToolName);
+    obj.insert(QStringLiteral("pending_tool_call_id"), state.pendingToolCallId);
+    obj.insert(QStringLiteral("last_tool_call_name"), state.lastToolCallName);
+    obj.insert(QStringLiteral("compaction_active"), state.compactionActive);
+    obj.insert(QStringLiteral("compaction_queued"), state.compactionQueued);
+    obj.insert(QStringLiteral("compaction_enabled"), state.compactionSettings.enabled);
+    obj.insert(QStringLiteral("compaction_trigger_ratio"), state.compactionSettings.trigger_ratio);
+    obj.insert(QStringLiteral("compaction_reserve_tokens"), state.compactionSettings.reserve_tokens);
+    obj.insert(QStringLiteral("compaction_keep_last_messages"), state.compactionSettings.keep_last_messages);
+    obj.insert(QStringLiteral("history_session_id"), state.historySessionId);
     obj.insert(QStringLiteral("last_error"), state.lastError);
     obj.insert(QStringLiteral("updated_at"), state.updatedAt.toString(Qt::ISODateWithMs));
     obj.insert(QStringLiteral("app_dir"), state.context.appDir);

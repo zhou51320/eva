@@ -128,7 +128,7 @@ bool Widget::dispatchScheduledText(const QString &text, const QJsonObject &job)
     const QString trimmed = text.trimmed();
     if (trimmed.isEmpty()) return false;
 
-    if (ui_state != CHAT_STATE)
+    if (runtimeConversationModeForUi() != ConversationMode::Chat)
     {
         reflash_state(QStringLiteral("ui:schedule ignored (not in chat state)"), WRONG_SIGNAL);
         return false;
@@ -145,25 +145,8 @@ bool Widget::dispatchScheduledText(const QString &text, const QJsonObject &job)
         return false;
     }
 
-    if (ui_mode == LOCAL_MODE)
-    {
-        const bool serverRunning = serverManager && serverManager->isRunning();
-        const bool backendReady = serverRunning && backendOnline_ && !lazyUnloaded_ && !lazyWakeInFlight_;
-        if (!backendReady)
-        {
-            if (!pendingSendAfterWake_)
-            {
-                pendingSendAfterWake_ = true;
-                reflash_state("ui:" + jtr("pop wake hint"), SIGNAL_SIGNAL);
-            }
-            if (serverManager && !lazyWakeInFlight_)
-            {
-                ensureLocalServer(true);
-            }
-            return false;
-        }
-    }
-    pendingSendAfterWake_ = false;
+    if (!ensureRuntimeReadyForSend())
+        return false;
 
     pendingAssistantHeaderReset_ = false;
     flushPendingStream();
@@ -172,7 +155,7 @@ bool Widget::dispatchScheduledText(const QString &text, const QJsonObject &job)
     turnAssistantHeaderPrinted_ = false;
     sawPromptPast_ = false;
     sawFinalPast_ = false;
-    kvUsedBeforeTurn_ = kvUsed_;
+    kvUsedBeforeTurn_ = runtimeKvUsedForUi();
     cancelLazyUnload(QStringLiteral("schedule dispatch"));
     markBackendActivity();
 
@@ -194,8 +177,7 @@ bool Widget::dispatchScheduledText(const QString &text, const QJsonObject &job)
         startTurnFlow(currentTask_, false);
         logCurrentTask(currentTask_);
         startCompactionRun(compactionReason_);
-        is_run = true;
-        ui_state_pushing();
+        projectRuntimePushingState();
         return true;
     }
 
@@ -204,15 +186,14 @@ bool Widget::dispatchScheduledText(const QString &text, const QJsonObject &job)
     logCurrentTask(currentTask_);
     ENDPOINT_DATA data = prepareEndpointData();
     handleChatReply(data, in);
-    is_run = true;
-    ui_state_pushing();
+    projectRuntimePushingState();
     return true;
 }
 
 void Widget::tryDispatchScheduledJobs()
 {
     if (scheduledDispatchQueue_.isEmpty()) return;
-    if (is_run || toolInvocationActive_ || engineerProxyRuntime_.active || compactionInFlight_ || compactionQueued_)
+    if (runtimeBusyForUi() || engineerProxyRuntime_.active || compactionInFlight_ || compactionQueued_)
     {
         return;
     }

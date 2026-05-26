@@ -1,6 +1,7 @@
 ﻿#include "widget.h"
 #include "ui_widget.h"
 #include "core/session/session_controller.h"
+#include "runtime/eva_runtime.h"
 #include "../utils/flowtracer.h"
 
 #include <doc2md/document_converter.h>
@@ -15,7 +16,7 @@
 
 void Widget::on_load_clicked()
 {
-    FlowTracer::log(FlowChannel::UI, QStringLiteral("action: load clicked"), activeTurnId_);
+    FlowTracer::log(FlowChannel::UI, QStringLiteral("action: load clicked"), runtimeActiveTurnIdForUi());
     // reflash_state("ui:" + jtr("clicked load"), SIGNAL_SIGNAL);
 
     // 弹出模式选择对话框：本地模式 或 链接模式（上下结构、紧凑、无“取消”按钮）
@@ -46,7 +47,7 @@ void Widget::on_load_clicked()
 
 	if (ret == 1)
 	{
-		FlowTracer::log(FlowChannel::UI, QStringLiteral("action: choose local mode"), activeTurnId_);
+		FlowTracer::log(FlowChannel::UI, QStringLiteral("action: choose local mode"), runtimeActiveTurnIdForUi());
         recordPerfEvent(QStringLiteral("ui.load.choose_local"));
 		// 用户选择本地模式：选择模型并启动本地 llama-server
         currentpath = customOpenfile(currentpath, jtr("load_button_tooltip"), "(*.bin *.gguf)");
@@ -55,9 +56,8 @@ void Widget::on_load_clicked()
         {
             return; // 路径未选择或与上次相同
         }
-        ui_mode = LOCAL_MODE;      // 本地模式 -> 使用本地llama-server + xNet
-        historypath = currentpath; // 记录这个路径
-        ui_SETTINGS.modelpath = currentpath;
+	        historypath = currentpath; // 记录这个路径
+	        ui_SETTINGS.modelpath = currentpath;
         ui_SETTINGS.mmprojpath = ""; // 清空mmproj模型路径
         ui_SETTINGS.lorapath = "";   // 清空lora模型路径
         // 自动在同级目录搜索带有 mmproj 关键字的 gguf 视觉模型，存在则设置路径
@@ -71,7 +71,7 @@ void Widget::on_load_clicked()
         {
             settings_ui->mmproj_LineEdit->setText(ui_SETTINGS.mmprojpath);
         }
-        is_load = false;
+        projectRuntimeLocalLoadingState();
 
         // 手动装载：用户在“装载→本地模式→选择模型”后，先一律把 ngl 设为 999（尽可能全量 offload）。
         // 目的：即使显存探测（vfree）没有正确获取，也能让用户直接获得 GPU 加速体验。
@@ -96,7 +96,7 @@ void Widget::on_load_clicked()
     }
 	else if (ret == 2)
 	{
-		FlowTracer::log(FlowChannel::UI, QStringLiteral("action: choose link mode"), activeTurnId_);
+		FlowTracer::log(FlowChannel::UI, QStringLiteral("action: choose link mode"), runtimeActiveTurnIdForUi());
         recordPerfEvent(QStringLiteral("ui.load.choose_link"));
 		// 用户选择链接模式：打开链接设置对话框
         ui_state_info = "ui:" + jtr("clicked") + jtr("link") + jtr("set");
@@ -169,15 +169,29 @@ void Widget::recv_freeover_loadlater()
 
 void Widget::preLoad()
 {
- 	FlowTracer::log(FlowChannel::Backend, QStringLiteral("backend: preload start %1").arg(ui_SETTINGS.modelpath), activeTurnId_);
+    FlowTracer::log(FlowChannel::Backend, QStringLiteral("backend: preload start %1").arg(ui_SETTINGS.modelpath), runtimeActiveTurnIdForUi());
+    projectRuntimeLocalLoadingState();
+    if (runtime_)
+    {
+        RuntimeLoadLocalCommand command;
+        command.modelPath = ui_SETTINGS.modelpath;
+        command.mmprojPath = ui_SETTINGS.mmprojpath;
+        command.loraPath = ui_SETTINGS.lorapath;
+        command.backendChoice = ui_device_backend;
+        command.port = ui_port;
+        command.settings = ui_SETTINGS;
+        QString runtimeError;
+        if (!runtime_->loadLocal(command, &runtimeError))
+        {
+            qWarning().noquote() << QStringLiteral("EvaRuntime loadLocal failed:") << runtimeError;
+        }
+    }
     {
         QJsonObject fields;
         fields.insert(QStringLiteral("model_path"), ui_SETTINGS.modelpath);
-        fields.insert(QStringLiteral("mode"), ui_mode == LINK_MODE ? QStringLiteral("link") : QStringLiteral("local"));
+        fields.insert(QStringLiteral("mode"), runtimeModeName(runtimeModeForUi()));
         recordPerfEvent(QStringLiteral("backend.preload"), fields);
     }
- 	is_load = false; // 重置is_load标签
-
     // 重新装载前清空 max_ngl：
     // - 多模态模型可能会在加载主模型与 mmproj/clip 组件时输出多段 n_layer/offload 日志；
     // - 若不清空，旧的 max_ngl 可能与新模型不一致，或在解析过程中被错误值覆盖；
@@ -187,7 +201,7 @@ void Widget::preLoad()
     preserveConversationOnNextReady_ = false; // Fresh load starts a new chat
     skipUnlockLoadIntro_ = false;            // Ensure unlockLoad prints system prompt
     flushPendingStream();
-    if (ui_state == CHAT_STATE)
+    if (runtimeConversationModeForUi() == ConversationMode::Chat)
     {
         ui->output->clear(); // 清空输出区
     }
@@ -283,7 +297,7 @@ QString Widget::flowTag(quint64 turnId) const
 void Widget::logFlow(FlowPhase phase, const QString &detail, SIGNAL_STATE state)
 {
     const QString line = QStringLiteral("[%1] %2").arg(flowPhaseName(phase), detail);
-    FlowTracer::log(FlowChannel::Session, line, activeTurnId_);
+    FlowTracer::log(FlowChannel::Session, line, runtimeActiveTurnIdForUi());
     Q_UNUSED(state);
 }
 
@@ -382,12 +396,14 @@ void Widget::logCurrentTask(ConversationTask task)
 
 void Widget::on_send_clicked()
 {
+    const RuntimeMode mode = runtimeModeForUi();
+    const ConversationMode conversation = runtimeConversationModeForUi();
 	FlowTracer::log(FlowChannel::Session,
 	                QStringLiteral("action: send clicked mode=%1 state=%2 tool_cont=%3")
-	                    .arg(ui_mode == LINK_MODE ? QStringLiteral("link") : QStringLiteral("local"))
-	                    .arg(ui_state == CHAT_STATE ? QStringLiteral("chat") : QStringLiteral("complete"))
+	                    .arg(runtimeModeName(mode))
+	                    .arg(conversationModeName(conversation))
 	                    .arg(tool_result.isEmpty() ? QStringLiteral("no") : QStringLiteral("yes")),
-	                activeTurnId_);
+	                runtimeActiveTurnIdForUi());
     if (linkProfile_ == LinkProfile::Control && !isControllerActive())
     {
         reflash_state(jtr("control disconnected"), WRONG_SIGNAL);
@@ -413,25 +429,8 @@ void Widget::on_send_clicked()
         return;
     }
 	const bool continuingTool = !tool_result.isEmpty();
-    if (ui_mode == LOCAL_MODE)
-    {
-        const bool serverRunning = serverManager && serverManager->isRunning();
-        const bool backendReady = serverRunning && backendOnline_ && !lazyUnloaded_ && !lazyWakeInFlight_;
-        if (!backendReady)
-        {
-            if (!pendingSendAfterWake_)
-            {
-                pendingSendAfterWake_ = true;
-                reflash_state("ui:" + jtr("pop wake hint"), SIGNAL_SIGNAL);
-            }
-            if (serverManager && !lazyWakeInFlight_)
-            {
-                ensureLocalServer(true);
-            }
-            return;
-        }
-    }
-    pendingSendAfterWake_ = false;
+    if (!ensureRuntimeReadyForSend())
+        return;
 
     // Reset headers and kv tracker
     pendingAssistantHeaderReset_ = false;
@@ -442,7 +441,7 @@ void Widget::on_send_clicked()
     sawPromptPast_ = false;
     sawFinalPast_ = false;
     // reflash_state("ui:" + jtr("clicked send"), SIGNAL_SIGNAL);
-    kvUsedBeforeTurn_ = kvUsed_;
+    kvUsedBeforeTurn_ = runtimeKvUsedForUi();
     cancelLazyUnload(QStringLiteral("user send"));
     markBackendActivity();
     // Fresh turn: clear prompt/output trackers before new network call
@@ -458,7 +457,7 @@ void Widget::on_send_clicked()
 
     beginTurnPerfSample();
     emit ui2net_stop(0);
-    if (ui_state == CHAT_STATE) beginSessionIfNeeded();
+    if (conversation == ConversationMode::Chat) beginSessionIfNeeded();
 
     if (!tool_result.isEmpty())
     {
@@ -470,7 +469,7 @@ void Widget::on_send_clicked()
         return;
     }
 
-    if (ui_state == CHAT_STATE)
+    if (conversation == ConversationMode::Chat)
     {
         const bool controllerToolPending = continuingTool && lastToolCallName_ == QStringLiteral("controller");
         const bool attachControllerFrame = ui_controller_ischecked && (!continuingTool || controllerToolPending);
@@ -482,8 +481,7 @@ void Widget::on_send_clicked()
             startTurnFlow(currentTask_, false);
             logCurrentTask(currentTask_);
             startCompactionRun(compactionReason_);
-            is_run = true;
-            ui_state_pushing();
+            projectRuntimePushingState();
             return;
         }
         currentTask_ = ConversationTask::ChatReply;
@@ -501,6 +499,5 @@ void Widget::on_send_clicked()
         handleCompletion(data);
     }
 
-    is_run = true;
-    ui_state_pushing();
+    projectRuntimePushingState();
 }
