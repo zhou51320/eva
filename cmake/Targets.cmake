@@ -197,12 +197,24 @@ add_executable(
     src/service/backend/xbackend_args.h
     src/service/tools/tool_executor.cpp
     src/service/tools/tool_executor.h
+    src/service/tools/tool_registry.cpp
+    src/service/tools/tool_registry.h
     src/xtool.cpp
     src/xtool.h
     src/xmcp.cpp
     src/xmcp.h
+    src/xmcp_internal.cpp
+    src/xmcp_internal.h
     src/utils/cpuchecker.h
     src/utils/gpuchecker.h
+    src/utils/docker_sandbox.cpp
+    src/utils/docker_sandbox.h
+    src/utils/perf_metrics.cpp
+    src/utils/perf_metrics.h
+    src/utils/processrunner.cpp
+    src/utils/processrunner.h
+    thirdparty/tinyexpr/tinyexpr.c
+    thirdparty/tinyexpr/tinyexpr.h
     src/net/controlchannel.cpp
     src/net/controlchannel.h
     src/utils/devicemanager.cpp
