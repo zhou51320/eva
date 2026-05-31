@@ -210,7 +210,7 @@ add_executable(
     src/xnet.cpp
     src/xnet.h)
 
-target_link_libraries(eva_acp PRIVATE Qt5::Core Qt5::Network Qt5::Gui)
+target_link_libraries(eva_acp PRIVATE Qt5::Core Qt5::Network Qt5::Gui qtmcp)
 target_compile_features(eva_acp PRIVATE cxx_std_17)
 target_include_directories(eva_acp PRIVATE
     ${CMAKE_BINARY_DIR}/src/utils
