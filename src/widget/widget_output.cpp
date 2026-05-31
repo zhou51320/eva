@@ -444,7 +444,7 @@ void Widget::reflash_output(const QString result, bool is_while, QColor color)
         handleEngineerStreamOutput(result, is_while);
         return;
     }
-    if (compactionInFlight_ && !is_while)
+    if (compactionInFlight() && !is_while)
     {
         flushPendingStream();
         if (!compactionHeaderPrinted_)
@@ -622,7 +622,7 @@ void Widget::processStreamChunk(const QString &chunk, const QColor &color)
     Q_UNUSED(color);
 
     // 压缩模式：直接输出紫色摘要，不进入 think/assistant 分支
-    if (compactionInFlight_)
+    if (compactionInFlight())
     {
         QString clean = chunk;
         clean.replace(QString(DEFAULT_THINK_BEGIN), QString());

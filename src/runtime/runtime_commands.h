@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QJsonArray>
+#include <QJsonObject>
 #include <QString>
 #include <QStringList>
 
@@ -27,7 +28,7 @@ struct RuntimeConnectRemoteCommand
     SETTINGS sampling;
 };
 
-// 发送命令。第一阶段先覆盖文本；附件字段保留给后续图片/文档/音频迁移。
+// 发送命令。允许前端直接提交结构化 endpoint 数据，由 runtime 在内部构造 RequestSnapshot。
 struct RuntimeSendMessageCommand
 {
     QString text;
@@ -35,6 +36,11 @@ struct RuntimeSendMessageCommand
     QStringList documentPaths;
     QStringList audioPaths;
     QJsonArray frontendMessages;
+    APIS apis;
+    ENDPOINT_DATA endpoint;
+    QJsonObject wordsObj;
+    int languageFlag = EVA_LANG_ZH;
+    quint64 turnId = 0;
     bool stream = true;
 };
 

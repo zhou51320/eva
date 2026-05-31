@@ -42,6 +42,82 @@ QString readStringSetting(QSettings &settings, const QString &key, const QString
     return value.isEmpty() ? fallback : value;
 }
 
+bool toolEnabledFromSettings(QSettings &settings, const QStringList &enabledTools, const QString &id, const QString &legacyKey)
+{
+    return enabledTools.contains(id) || settings.value(legacyKey, false).toBool();
+}
+
+QJsonObject capabilityPayloadFromConfig(const QString &configPath)
+{
+    QSettings settings(configPath, QSettings::IniFormat);
+    QStringList enabledTools = settings.value(QStringLiteral("enabled_tools")).toStringList();
+    enabledTools.removeDuplicates();
+
+    const bool calculator = toolEnabledFromSettings(settings, enabledTools, QStringLiteral("calculator"), QStringLiteral("calculator_checkbox"));
+    const bool knowledge = toolEnabledFromSettings(settings, enabledTools, QStringLiteral("knowledge"), QStringLiteral("knowledge_checkbox"));
+    const bool controller = toolEnabledFromSettings(settings, enabledTools, QStringLiteral("controller"), QStringLiteral("controller_checkbox"));
+    const bool stablediffusion = toolEnabledFromSettings(settings, enabledTools, QStringLiteral("stablediffusion"), QStringLiteral("stablediffusion_checkbox"));
+    const bool engineer = toolEnabledFromSettings(settings, enabledTools, QStringLiteral("engineer"), QStringLiteral("engineer_checkbox"));
+    const bool mcp = toolEnabledFromSettings(settings, enabledTools, QStringLiteral("mcp"), QStringLiteral("MCPtools_checkbox"));
+
+    auto appendIfMissing = [&enabledTools](const QString &id, bool enabled)
+    {
+        if (enabled && !enabledTools.contains(id)) enabledTools.append(id);
+    };
+    appendIfMissing(QStringLiteral("calculator"), calculator);
+    appendIfMissing(QStringLiteral("knowledge"), knowledge);
+    appendIfMissing(QStringLiteral("controller"), controller);
+    appendIfMissing(QStringLiteral("stablediffusion"), stablediffusion);
+    appendIfMissing(QStringLiteral("engineer"), engineer);
+    appendIfMissing(QStringLiteral("mcp"), mcp);
+
+    const QString ttsModelPath = settings.value(QStringLiteral("ttscpp_modelpath")).toString().trimmed();
+    const QString ttsProgramPath = DeviceManager::programPath(QStringLiteral("tts-cli"));
+
+    QJsonObject configuredTools;
+    configuredTools.insert(QStringLiteral("calculator"), calculator);
+    configuredTools.insert(QStringLiteral("knowledge"), knowledge);
+    configuredTools.insert(QStringLiteral("controller"), controller);
+    configuredTools.insert(QStringLiteral("stablediffusion"), stablediffusion);
+    configuredTools.insert(QStringLiteral("engineer"), engineer);
+    configuredTools.insert(QStringLiteral("mcp"), mcp);
+
+    QJsonObject availableTools;
+    availableTools.insert(QStringLiteral("calculator"), false);
+    availableTools.insert(QStringLiteral("knowledge"), false);
+    availableTools.insert(QStringLiteral("controller"), false);
+    availableTools.insert(QStringLiteral("stablediffusion"), false);
+    availableTools.insert(QStringLiteral("engineer"), false);
+    availableTools.insert(QStringLiteral("mcp"), false);
+
+    QJsonObject tts;
+    tts.insert(QStringLiteral("model_path"), ttsModelPath);
+    tts.insert(QStringLiteral("model_configured"), !ttsModelPath.isEmpty() && QFileInfo::exists(ttsModelPath));
+    tts.insert(QStringLiteral("program_path"), ttsProgramPath);
+    tts.insert(QStringLiteral("program_available"), !ttsProgramPath.isEmpty() && QFileInfo::exists(ttsProgramPath));
+
+    QJsonObject payload;
+    payload.insert(QStringLiteral("chat"), true);
+    payload.insert(QStringLiteral("stream"), true);
+    payload.insert(QStringLiteral("reset"), true);
+    payload.insert(QStringLiteral("stop"), true);
+    payload.insert(QStringLiteral("tools"), availableTools);
+    payload.insert(QStringLiteral("configured_tools"), configuredTools);
+    payload.insert(QStringLiteral("tools_enabled"), false);
+    payload.insert(QStringLiteral("enabled_tools"), QJsonArray());
+    payload.insert(QStringLiteral("configured_tools_list"), QJsonArray::fromStringList(enabledTools));
+    payload.insert(QStringLiteral("tool_call_mode"), settings.value(QStringLiteral("tool_call_mode"), DEFAULT_TOOL_CALL_MODE).toInt());
+    payload.insert(QStringLiteral("full_eva_stack"), false);
+    payload.insert(QStringLiteral("tool_execution_route"), QStringLiteral("not_attached"));
+    payload.insert(QStringLiteral("conversation_owner"), QStringLiteral("acp_runtime"));
+    payload.insert(QStringLiteral("message_input_mode"), QStringLiteral("request_messages"));
+    payload.insert(QStringLiteral("knowledge"), false);
+    payload.insert(QStringLiteral("mcp"), false);
+    payload.insert(QStringLiteral("tts"), tts);
+    payload.insert(QStringLiteral("tts_related_output"), false);
+    return payload;
+}
+
 QString normalizeEndpoint(const QString &rawEndpoint)
 {
     QString clean = rawEndpoint.trimmed();
@@ -128,6 +204,7 @@ quint16 AcpRuntime::bindPort() const
 QJsonObject AcpRuntime::healthPayload() const
 {
     QJsonObject payload;
+    const bool bridgeAvailable = bridgeModeEnabled();
     const bool hasRuntime = directRuntimeEnabled_ && runtimeCore_;
     const RuntimeState runtimeState = hasRuntime ? runtimeCore_->stateSnapshot() : RuntimeState();
     const QString backendState = hasRuntime ? runtimePhaseName(runtimeState.phase) : lifecycleState_;
@@ -149,9 +226,10 @@ QJsonObject AcpRuntime::healthPayload() const
     payload.insert(QStringLiteral("config_path"), configPath());
     payload.insert(QStringLiteral("backend_state"), backendState);
     payload.insert(QStringLiteral("backend_ready"), backendReady);
-    payload.insert(QStringLiteral("state_source"), directRuntimeEnabled_ ? QStringLiteral("direct_runtime") : QStringLiteral("legacy_acp"));
+    payload.insert(QStringLiteral("state_source"), bridgeAvailable ? QStringLiteral("bridge") : (directRuntimeEnabled_ ? QStringLiteral("direct_runtime") : QStringLiteral("legacy_acp")));
     payload.insert(QStringLiteral("direct_runtime"), directRuntimeEnabled_);
-    payload.insert(QStringLiteral("bridge_available"), bridgeClient_ && bridgeClient_->isConnected());
+    payload.insert(QStringLiteral("bridge_available"), bridgeAvailable);
+    payload.insert(QStringLiteral("chat_route"), bridgeAvailable ? QStringLiteral("eva_bridge") : (directRuntimeEnabled_ ? QStringLiteral("direct_runtime") : QStringLiteral("unavailable")));
     return payload;
 }
 
@@ -159,13 +237,21 @@ QJsonObject AcpRuntime::modelsPayload() const
 {
     QJsonArray data;
     QString bridgeError;
+    const bool bridgeAvailable = bridgeModeEnabled();
+    if (bridgeAvailable)
+    {
+        data = bridgeClient_->listModels(&bridgeError);
+        QJsonObject payload;
+        payload.insert(QStringLiteral("object"), QStringLiteral("list"));
+        payload.insert(QStringLiteral("data"), data);
+        payload.insert(QStringLiteral("state_source"), QStringLiteral("bridge"));
+        if (!bridgeError.isEmpty()) payload.insert(QStringLiteral("bridge_error"), bridgeError);
+        return payload;
+    }
+
     const bool hasRuntime = directRuntimeEnabled_ && runtimeCore_;
     const RuntimeState runtimeState = hasRuntime ? runtimeCore_->stateSnapshot() : RuntimeState();
     const bool linkMode = hasRuntime ? runtimeState.mode == RuntimeMode::Link : isLinkMode();
-    if (bridgeModeEnabled())
-    {
-        data = bridgeClient_->listModels(&bridgeError);
-    }
     if (data.isEmpty())
     {
         if (linkMode)
@@ -186,26 +272,47 @@ QJsonObject AcpRuntime::modelsPayload() const
     QJsonObject payload;
     payload.insert(QStringLiteral("object"), QStringLiteral("list"));
     payload.insert(QStringLiteral("data"), data);
+    payload.insert(QStringLiteral("state_source"), directRuntimeEnabled_ && runtimeCore_ ? QStringLiteral("direct_runtime") : QStringLiteral("legacy_acp"));
     if (!bridgeError.isEmpty()) payload.insert(QStringLiteral("bridge_error"), bridgeError);
     return payload;
 }
 
 QJsonObject AcpRuntime::backendStatePayload() const
 {
-    if (directRuntimeEnabled_ && runtimeCore_)
+    QString bridgeError;
+    const bool bridgeAvailable = bridgeModeEnabled();
+    if (bridgeAvailable)
     {
-        QJsonObject payload = runtimeStatePayload();
-        QString bridgeError;
-        payload.insert(QStringLiteral("bridge_available"), bridgeModeEnabled());
-        if (!bridgeError.isEmpty()) payload.insert(QStringLiteral("bridge_error"), bridgeError);
+        QJsonObject bridgeState = bridgeClient_->getState(&bridgeError);
+        if (!bridgeState.isEmpty())
+        {
+            bridgeState.insert(QStringLiteral("chat_route"), QStringLiteral("eva_bridge"));
+            bridgeState.insert(QStringLiteral("direct_runtime_available"), directRuntimeEnabled_ && runtimeCore_);
+            return bridgeState;
+        }
+
+        QJsonObject payload;
+        payload.insert(QStringLiteral("mode"), isLinkMode() ? QStringLiteral("link") : QStringLiteral("local"));
+        payload.insert(QStringLiteral("state"), QStringLiteral("error"));
+        payload.insert(QStringLiteral("ready"), false);
+        payload.insert(QStringLiteral("endpoint"), backendEndpoint());
+        payload.insert(QStringLiteral("current_model"), currentModelId());
+        payload.insert(QStringLiteral("state_source"), QStringLiteral("bridge"));
+        payload.insert(QStringLiteral("direct_runtime"), false);
+        payload.insert(QStringLiteral("direct_runtime_available"), directRuntimeEnabled_ && runtimeCore_);
+        payload.insert(QStringLiteral("bridge_available"), true);
+        payload.insert(QStringLiteral("chat_route"), QStringLiteral("eva_bridge"));
+        payload.insert(QStringLiteral("last_error"), bridgeError.isEmpty() ? QStringLiteral("Bridge state query failed.") : bridgeError);
         return payload;
     }
 
-    QString bridgeError;
-    if (bridgeModeEnabled())
+    if (directRuntimeEnabled_ && runtimeCore_)
     {
-        QJsonObject bridgeState = bridgeClient_->getState(&bridgeError);
-        if (!bridgeState.isEmpty()) return bridgeState;
+        QJsonObject payload = runtimeStatePayload();
+        payload.insert(QStringLiteral("bridge_available"), false);
+        payload.insert(QStringLiteral("chat_route"), QStringLiteral("direct_runtime"));
+        if (!bridgeError.isEmpty()) payload.insert(QStringLiteral("bridge_error"), bridgeError);
+        return payload;
     }
 
     QJsonObject payload;
@@ -223,6 +330,7 @@ QJsonObject AcpRuntime::backendStatePayload() const
     payload.insert(QStringLiteral("state_source"), bridgeError.isEmpty() ? QStringLiteral("legacy_acp") : QStringLiteral("bridge"));
     payload.insert(QStringLiteral("direct_runtime"), false);
     payload.insert(QStringLiteral("bridge_available"), bridgeError.isEmpty() && bridgeClient_ && bridgeClient_->isConnected());
+    payload.insert(QStringLiteral("chat_route"), QStringLiteral("unavailable"));
     payload.insert(QStringLiteral("port"), isLinkMode() ? QString() : backendPort_);
     payload.insert(QStringLiteral("nctx"), settings_.nctx);
     payload.insert(QStringLiteral("ngl"), settings_.ngl);
@@ -749,67 +857,10 @@ bool AcpRuntime::directRuntimeEnabled() const
 
 bool AcpRuntime::bridgeModeEnabled() const
 {
-    if (directRuntimeEnabled_)
-    {
-        return false;
-    }
     if (!bridgeClient_) return false;
     if (bridgeClient_->isConnected()) return true;
     QString errorMessage;
     return const_cast<AcpBridgeClient *>(bridgeClient_)->ensureConnected(300, &errorMessage);
-}
-
-QString AcpRuntime::modelsEndpoint() const
-{
-    if (directRuntimeEnabled_ && runtimeCore_)
-    {
-        const RuntimeState state = runtimeCore_->stateSnapshot();
-        if (state.mode == RuntimeMode::Link)
-        {
-            const QString endpoint = state.apis.api_endpoint.isEmpty() ? state.endpoint : state.apis.api_endpoint;
-            const QUrl base = QUrl::fromUserInput(endpoint);
-            return OpenAiCompat::joinPath(base, OpenAiCompat::modelsPath(base)).toString();
-        }
-        return QString();
-    }
-    if (isLinkMode())
-    {
-        const QUrl base = QUrl::fromUserInput(apis_.api_endpoint);
-        return OpenAiCompat::joinPath(base, OpenAiCompat::modelsPath(base)).toString();
-    }
-    return QString();
-}
-
-QString AcpRuntime::chatCompletionsEndpoint() const
-{
-    if (directRuntimeEnabled_ && runtimeCore_)
-    {
-        const RuntimeState state = runtimeCore_->stateSnapshot();
-        if (state.mode == RuntimeMode::Link)
-        {
-            const QString endpoint = state.apis.api_endpoint.isEmpty() ? state.endpoint : state.apis.api_endpoint;
-            const QUrl base = QUrl::fromUserInput(endpoint);
-            return OpenAiCompat::joinPath(base, OpenAiCompat::chatCompletionsPath(base)).toString();
-        }
-        return state.endpoint.isEmpty() ? backendEndpoint() + QStringLiteral("/v1/chat/completions")
-                                        : state.endpoint + QStringLiteral("/v1/chat/completions");
-    }
-    if (isLinkMode())
-    {
-        const QUrl base = QUrl::fromUserInput(apis_.api_endpoint);
-        return OpenAiCompat::joinPath(base, OpenAiCompat::chatCompletionsPath(base)).toString();
-    }
-    return backendEndpoint() + QStringLiteral("/v1/chat/completions");
-}
-
-QString AcpRuntime::configuredApiKey() const
-{
-    if (directRuntimeEnabled_ && runtimeCore_)
-    {
-        const RuntimeState state = runtimeCore_->stateSnapshot();
-        return state.mode == RuntimeMode::Link ? state.apis.api_key : QString();
-    }
-    return isLinkMode() ? apis_.api_key : QString();
 }
 
 QString AcpRuntime::configuredApiModel() const
@@ -824,25 +875,37 @@ QString AcpRuntime::configuredApiModel() const
 
 bool AcpRuntime::resetConversation(QString *errorMessage)
 {
+    const bool bridgeAvailable = bridgeModeEnabled();
+    if (bridgeAvailable)
+    {
+        if (bridgeClient_ && bridgeClient_->resetConversation(errorMessage)) return true;
+        if (errorMessage && errorMessage->isEmpty()) *errorMessage = QStringLiteral("Bridge reset failed.");
+        return false;
+    }
     if (directRuntimeEnabled_ && runtimeCore_)
     {
         RuntimeResetCommand command;
         command.clearHistory = true;
         return runtimeCore_->resetConversation(command, errorMessage);
     }
-    if (bridgeClient_ && bridgeClient_->resetConversation(errorMessage)) return true;
     if (errorMessage) *errorMessage = QStringLiteral("Bridge reset unavailable.");
     return false;
 }
 
 bool AcpRuntime::stopRuntime(QString *errorMessage)
 {
+    const bool bridgeAvailable = bridgeModeEnabled();
+    if (bridgeAvailable)
+    {
+        if (bridgeClient_ && bridgeClient_->stopRuntime(errorMessage)) return true;
+        if (errorMessage && errorMessage->isEmpty()) *errorMessage = QStringLiteral("Bridge stop failed.");
+        return false;
+    }
     if (directRuntimeEnabled_ && runtimeCore_)
     {
         runtimeCore_->stop();
         return true;
     }
-    if (bridgeClient_ && bridgeClient_->stopRuntime(errorMessage)) return true;
     if (errorMessage) *errorMessage = QStringLiteral("Bridge stop unavailable.");
     return false;
 }
@@ -856,154 +919,7 @@ QJsonObject AcpRuntime::streamChatCompletion(const QJsonObject &request,
                                              const std::function<void(const QString &role, const QString &chunk)> &onChunk,
                                              QString *errorMessage)
 {
-    if (directRuntimeEnabled_ && runtimeCore_)
-    {
-        const RuntimeState runtimeState = runtimeCore_->stateSnapshot();
-        const bool linkMode = runtimeState.mode == RuntimeMode::Link;
-        const SETTINGS settings = runtimeState.initialized ? runtimeState.settings : settings_;
-        APIS runtimeApis = runtimeState.initialized ? runtimeState.apis : apis_;
-        QString runtimeEndpoint = runtimeState.endpoint.trimmed();
-        if (runtimeEndpoint.isEmpty()) runtimeEndpoint = backendEndpoint();
-
-        if (!linkMode && !runtimeState.backendReady)
-        {
-            if (errorMessage) *errorMessage = QStringLiteral("Local backend is not ready.");
-            return QJsonObject();
-        }
-
-        RequestSnapshot snapshot;
-        snapshot.apis = runtimeApis;
-        snapshot.apis.api_endpoint = linkMode && !runtimeApis.api_endpoint.trimmed().isEmpty()
-                                         ? runtimeApis.api_endpoint.trimmed()
-                                         : runtimeEndpoint;
-        if (snapshot.apis.api_model.trimmed().isEmpty())
-        {
-            snapshot.apis.api_model = currentModelId().isEmpty() ? QStringLiteral("default") : currentModelId();
-        }
-        const QString requestedModel = request.value(QStringLiteral("model")).toString().trimmed();
-        if (!requestedModel.isEmpty()) snapshot.apis.api_model = requestedModel;
-        snapshot.apis.is_local_backend = !linkMode;
-        if (!linkMode)
-        {
-            snapshot.apis.api_chat_endpoint = QStringLiteral(CHAT_ENDPOINT);
-            snapshot.apis.api_completion_endpoint = QStringLiteral(COMPLETION_ENDPOINT);
-        }
-
-        ENDPOINT_DATA endpoint;
-        endpoint.date_prompt.clear();
-        endpoint.messagesArray = request.value(QStringLiteral("messages")).toArray();
-        endpoint.tools = request.value(QStringLiteral("tools")).toArray();
-        endpoint.tool_call_mode = endpoint.tools.isEmpty() ? DEFAULT_TOOL_CALL_MODE : TOOL_CALL_FUNCTION;
-        endpoint.is_complete_state = false;
-        endpoint.temp = static_cast<float>(request.value(QStringLiteral("temperature")).toDouble(settings.temp));
-        endpoint.repeat = settings.repeat;
-        endpoint.top_k = settings.top_k;
-        endpoint.top_p = request.value(QStringLiteral("top_p")).toDouble(settings.hid_top_p);
-        endpoint.n_predict = request.value(QStringLiteral("max_completion_tokens")).toInt(settings.hid_npredict);
-        if (endpoint.n_predict <= 0)
-        {
-            endpoint.n_predict = request.value(QStringLiteral("max_tokens")).toInt(settings.hid_npredict);
-        }
-        endpoint.reasoning_effort = request.value(QStringLiteral("reasoning_effort")).toString(settings.reasoning_effort);
-        const QJsonValue stopValue = request.value(QStringLiteral("stop"));
-        if (stopValue.isArray())
-        {
-            const QJsonArray stops = stopValue.toArray();
-            for (const QJsonValue &value : stops)
-            {
-                if (value.isString()) endpoint.stopwords.append(value.toString());
-            }
-        }
-        else if (stopValue.isString())
-        {
-            endpoint.stopwords.append(stopValue.toString());
-        }
-
-        const quint64 turnId = static_cast<quint64>(QDateTime::currentMSecsSinceEpoch());
-        endpoint.turn_id = turnId;
-        snapshot.endpoint = endpoint;
-        snapshot.languageFlag = EVA_LANG_ZH;
-        snapshot.turnId = turnId;
-
-        QEventLoop loop;
-        QString assistantText;
-        QString runtimeError;
-        bool finished = false;
-        QMetaObject::Connection eventConn;
-        eventConn = connect(runtimeCore_, &EvaRuntime::runtimeEvent, this, [&](const RuntimeEvent &event)
-        {
-            if (event.state.activeTurnId != 0 && event.state.activeTurnId != turnId)
-            {
-                return;
-            }
-            if (event.type == RuntimeEventType::OutputChunk)
-            {
-                assistantText += event.text;
-                if (onChunk) onChunk(QStringLiteral("assistant"), event.text);
-            }
-            else if (event.type == RuntimeEventType::Error || event.type == RuntimeEventType::CommandRejected)
-            {
-                runtimeError = event.error.isEmpty() ? event.text : event.error;
-            }
-            else if (event.type == RuntimeEventType::TurnFinished)
-            {
-                finished = true;
-                loop.quit();
-            }
-        });
-
-        QString sendError;
-        if (!runtimeCore_->sendRequestSnapshot(snapshot, &sendError))
-        {
-            disconnect(eventConn);
-            if (errorMessage) *errorMessage = sendError;
-            return QJsonObject();
-        }
-
-        QTimer timeout;
-        timeout.setSingleShot(true);
-        connect(&timeout, &QTimer::timeout, &loop, [&]()
-        {
-            runtimeError = QStringLiteral("Runtime chat timed out.");
-            runtimeCore_->stop();
-            loop.quit();
-        });
-        timeout.start(qMax(60000, DEFAULT_NET_IDLE_TIMEOUT_MS * 3));
-        loop.exec();
-        disconnect(eventConn);
-
-        if (!finished && runtimeError.isEmpty())
-        {
-            runtimeError = QStringLiteral("Runtime chat ended before completion.");
-        }
-        if (!runtimeError.isEmpty() && assistantText.isEmpty())
-        {
-            if (errorMessage) *errorMessage = runtimeError;
-            return QJsonObject();
-        }
-
-        QJsonObject message;
-        message.insert(QStringLiteral("role"), QStringLiteral("assistant"));
-        message.insert(QStringLiteral("content"), assistantText);
-
-        QJsonObject choice;
-        choice.insert(QStringLiteral("index"), 0);
-        choice.insert(QStringLiteral("message"), message);
-        choice.insert(QStringLiteral("finish_reason"), runtimeError.isEmpty() ? QStringLiteral("stop") : QStringLiteral("error"));
-
-        QJsonArray choices;
-        choices.append(choice);
-
-        QJsonObject response;
-        response.insert(QStringLiteral("id"), QStringLiteral("chatcmpl-runtime"));
-        response.insert(QStringLiteral("object"), QStringLiteral("chat.completion"));
-        response.insert(QStringLiteral("created"), static_cast<qint64>(QDateTime::currentSecsSinceEpoch()));
-        response.insert(QStringLiteral("model"), snapshot.apis.api_model);
-        response.insert(QStringLiteral("choices"), choices);
-        return response;
-    }
-
-    if (bridgeClient_)
+    if (bridgeModeEnabled() && bridgeClient_)
     {
         QString text;
         const QJsonArray messages = request.value(QStringLiteral("messages")).toArray();
@@ -1052,10 +968,161 @@ QJsonObject AcpRuntime::streamChatCompletion(const QJsonObject &request,
         response.insert(QStringLiteral("created"), static_cast<qint64>(QDateTime::currentSecsSinceEpoch()));
         response.insert(QStringLiteral("model"), liveModel.isEmpty() ? currentModelId() : liveModel);
         response.insert(QStringLiteral("choices"), choices);
+        response.insert(QStringLiteral("eva_route"), QStringLiteral("bridge"));
+        response.insert(QStringLiteral("conversation_owner"), QStringLiteral("widget"));
+        response.insert(QStringLiteral("message_input_mode"), QStringLiteral("latest_user_text"));
         return response;
     }
 
-    if (errorMessage) *errorMessage = QStringLiteral("Bridge mode unavailable.");
+    if (directRuntimeEnabled_ && runtimeCore_)
+    {
+        const RuntimeState runtimeState = runtimeCore_->stateSnapshot();
+        const bool linkMode = runtimeState.mode == RuntimeMode::Link;
+        const SETTINGS settings = runtimeState.initialized ? runtimeState.settings : settings_;
+        APIS runtimeApis = runtimeState.initialized ? runtimeState.apis : apis_;
+        QString runtimeEndpoint = runtimeState.endpoint.trimmed();
+        if (runtimeEndpoint.isEmpty()) runtimeEndpoint = backendEndpoint();
+
+        if (!linkMode && !runtimeState.backendReady)
+        {
+            if (errorMessage) *errorMessage = QStringLiteral("Local backend is not ready.");
+            return QJsonObject();
+        }
+
+        RuntimeSendMessageCommand command;
+        command.apis = runtimeApis;
+        command.apis.api_endpoint = linkMode && !runtimeApis.api_endpoint.trimmed().isEmpty()
+                                        ? runtimeApis.api_endpoint.trimmed()
+                                        : runtimeEndpoint;
+        if (command.apis.api_model.trimmed().isEmpty())
+        {
+            command.apis.api_model = currentModelId().isEmpty() ? QStringLiteral("default") : currentModelId();
+        }
+        const QString requestedModel = request.value(QStringLiteral("model")).toString().trimmed();
+        if (!requestedModel.isEmpty()) command.apis.api_model = requestedModel;
+        command.apis.is_local_backend = !linkMode;
+        if (!linkMode)
+        {
+            command.apis.api_chat_endpoint = QStringLiteral(CHAT_ENDPOINT);
+            command.apis.api_completion_endpoint = QStringLiteral(COMPLETION_ENDPOINT);
+        }
+
+        command.endpoint.date_prompt.clear();
+        command.endpoint.messagesArray = request.value(QStringLiteral("messages")).toArray();
+        command.endpoint.tools = request.value(QStringLiteral("tools")).toArray();
+        command.endpoint.tool_call_mode = command.endpoint.tools.isEmpty() ? DEFAULT_TOOL_CALL_MODE : TOOL_CALL_FUNCTION;
+        command.endpoint.is_complete_state = false;
+        command.endpoint.temp = static_cast<float>(request.value(QStringLiteral("temperature")).toDouble(settings.temp));
+        command.endpoint.repeat = settings.repeat;
+        command.endpoint.top_k = settings.top_k;
+        command.endpoint.top_p = request.value(QStringLiteral("top_p")).toDouble(settings.hid_top_p);
+        command.endpoint.n_predict = request.value(QStringLiteral("max_completion_tokens")).toInt(settings.hid_npredict);
+        if (command.endpoint.n_predict <= 0)
+        {
+            command.endpoint.n_predict = request.value(QStringLiteral("max_tokens")).toInt(settings.hid_npredict);
+        }
+        command.endpoint.reasoning_effort = request.value(QStringLiteral("reasoning_effort")).toString(settings.reasoning_effort);
+        const QJsonValue stopValue = request.value(QStringLiteral("stop"));
+        if (stopValue.isArray())
+        {
+            const QJsonArray stops = stopValue.toArray();
+            for (const QJsonValue &value : stops)
+            {
+                if (value.isString()) command.endpoint.stopwords.append(value.toString());
+            }
+        }
+        else if (stopValue.isString())
+        {
+            command.endpoint.stopwords.append(stopValue.toString());
+        }
+
+        const quint64 turnId = static_cast<quint64>(QDateTime::currentMSecsSinceEpoch());
+        command.turnId = turnId;
+        command.endpoint.turn_id = turnId;
+        command.languageFlag = EVA_LANG_ZH;
+
+        QEventLoop loop;
+        QString assistantText;
+        QString runtimeError;
+        bool finished = false;
+        QMetaObject::Connection eventConn;
+        eventConn = connect(runtimeCore_, &EvaRuntime::runtimeEvent, this, [&](const RuntimeEvent &event)
+        {
+            if (event.state.activeTurnId != 0 && event.state.activeTurnId != turnId)
+            {
+                return;
+            }
+            if (event.type == RuntimeEventType::OutputChunk)
+            {
+                assistantText += event.text;
+                if (onChunk) onChunk(QStringLiteral("assistant"), event.text);
+            }
+            else if (event.type == RuntimeEventType::Error || event.type == RuntimeEventType::CommandRejected)
+            {
+                runtimeError = event.error.isEmpty() ? event.text : event.error;
+            }
+            else if (event.type == RuntimeEventType::TurnFinished)
+            {
+                finished = true;
+                loop.quit();
+            }
+        });
+
+        QString sendError;
+        if (!runtimeCore_->sendMessage(command, &sendError))
+        {
+            disconnect(eventConn);
+            if (errorMessage) *errorMessage = sendError;
+            return QJsonObject();
+        }
+
+        QTimer timeout;
+        timeout.setSingleShot(true);
+        connect(&timeout, &QTimer::timeout, &loop, [&]()
+        {
+            runtimeError = QStringLiteral("Runtime chat timed out.");
+            runtimeCore_->stop();
+            loop.quit();
+        });
+        timeout.start(qMax(60000, DEFAULT_NET_IDLE_TIMEOUT_MS * 3));
+        loop.exec();
+        disconnect(eventConn);
+
+        if (!finished && runtimeError.isEmpty())
+        {
+            runtimeError = QStringLiteral("Runtime chat ended before completion.");
+        }
+        if (!runtimeError.isEmpty() && assistantText.isEmpty())
+        {
+            if (errorMessage) *errorMessage = runtimeError;
+            return QJsonObject();
+        }
+
+        QJsonObject message;
+        message.insert(QStringLiteral("role"), QStringLiteral("assistant"));
+        message.insert(QStringLiteral("content"), assistantText);
+
+        QJsonObject choice;
+        choice.insert(QStringLiteral("index"), 0);
+        choice.insert(QStringLiteral("message"), message);
+        choice.insert(QStringLiteral("finish_reason"), runtimeError.isEmpty() ? QStringLiteral("stop") : QStringLiteral("error"));
+
+        QJsonArray choices;
+        choices.append(choice);
+
+        QJsonObject response;
+        response.insert(QStringLiteral("id"), QStringLiteral("chatcmpl-runtime"));
+        response.insert(QStringLiteral("object"), QStringLiteral("chat.completion"));
+        response.insert(QStringLiteral("created"), static_cast<qint64>(QDateTime::currentSecsSinceEpoch()));
+        response.insert(QStringLiteral("model"), command.apis.api_model);
+        response.insert(QStringLiteral("choices"), choices);
+        response.insert(QStringLiteral("eva_route"), QStringLiteral("direct_runtime"));
+        response.insert(QStringLiteral("conversation_owner"), QStringLiteral("acp_runtime"));
+        response.insert(QStringLiteral("message_input_mode"), QStringLiteral("request_messages"));
+        return response;
+    }
+
+    if (errorMessage) *errorMessage = QStringLiteral("EVA runtime or bridge is unavailable; refusing to bypass EVA and call the model directly.");
     return QJsonObject();
 }
 
@@ -1157,6 +1224,7 @@ QJsonObject AcpRuntime::runtimeStatePayload() const
     payload.insert(QStringLiteral("lora_path"), settings.lorapath);
     payload.insert(QStringLiteral("api_endpoint"), runtimeLinkMode ? stateApis.api_endpoint : QString());
     payload.insert(QStringLiteral("api_model"), runtimeLinkMode ? stateApis.api_model : QString());
+    payload.insert(QStringLiteral("capabilities"), capabilityPayloadFromConfig(configPath()));
     payload.insert(QStringLiteral("last_error"), lastError_.isEmpty() ? state.lastError : lastError_);
     payload.insert(QStringLiteral("last_output_tail"), lastOutput_);
     return payload;

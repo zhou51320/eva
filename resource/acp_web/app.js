@@ -174,6 +174,10 @@ function renderMessages() {
 
 function renderBackendState() {
   const info = state.backendState || {};
+  const caps = info.capabilities || {};
+  const tts = caps.tts || {};
+  const availableTools = Array.isArray(caps.enabled_tools) && caps.enabled_tools.length > 0 ? caps.enabled_tools.join(', ') : '无';
+  const configuredTools = Array.isArray(caps.configured_tools_list) && caps.configured_tools_list.length > 0 ? caps.configured_tools_list.join(', ') : '无';
   const mode = info.mode || '-';
   const endpoint = info.endpoint || info.api_endpoint || '-';
   const model = info.current_model || info.api_model || '-';
@@ -203,7 +207,16 @@ function renderBackendState() {
     ['当前模型', model],
     ['端点', endpoint],
     ['状态源', sourceLabel],
+    ['聊天路径', info.chat_route || '-'],
+    ['EVA能力', caps.full_eva_stack ? '完整主程序桥接' : 'direct runtime 基础推理'],
+    ['会话归属', caps.conversation_owner || '-'],
+    ['输入模式', caps.message_input_mode || '-'],
     ['桥接', info.bridge_available ? '可用' : '未使用'],
+    ['命令能力', `chat:${caps.chat ? 'on' : '-'} stream:${caps.stream ? 'on' : '-'} stop:${caps.stop ? 'on' : '-'}`],
+    ['可执行工具', availableTools],
+    ['已配置工具', configuredTools],
+    ['知识库/MCP', `knowledge:${caps.knowledge ? 'on' : '-'} mcp:${caps.mcp ? 'on' : '-'}`],
+    ['TTS', `model:${tts.model_configured ? 'ok' : '-'} program:${tts.program_available ? 'ok' : '-'}`],
     ['后端选择', info.backend_choice || '-'],
     ['后端解析', info.backend_resolved || '-'],
     ['线程', info.nthread || '-'],

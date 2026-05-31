@@ -59,7 +59,7 @@ void Widget::updateKvBarUi()
     const int cap = resolvedContextLimitForUi();
     const bool capKnown = cap > 0;
 
-    int used = qMax(0, kvUsed_);
+    int used = qMax(0, runtimeKvUsedForUi());
     if (capKnown && used > cap) used = cap;
 
     // 统一换算为百分比：KV 条只用第二段（橙色）表示占用
@@ -79,7 +79,7 @@ void Widget::updateKvBarUi()
     ui->kv_bar->setCenterText(QString());
     ui->kv_bar->setToolTip(jtr("kv bar tooltip").arg(used).arg(capLabel));
     broadcastControlKv(used, cap, percent);
-    syncRuntimeSessionMirror(false);
+    syncRuntimeSessionMirror(false, false, false, false, true);
 }
 
 void Widget::recv_prompt_baseline(int tokens)
@@ -194,7 +194,7 @@ void Widget::onSlotAssigned(int slotId)
     currentSlotId_ = slotId;
     if (history_) history_->updateSlotId(slotId);
     reflash_state(QString("net:slot id=%1").arg(slotId), SIGNAL_SIGNAL);
-    syncRuntimeSessionMirror(false);
+    syncRuntimeSessionMirror(false, false, false, false, true);
 }
 
 void Widget::recv_reasoning_tokens(int tokens)
@@ -226,7 +226,7 @@ void Widget::recv_reasoning_tokens(int tokens)
                 .arg(kvTokensTurn_),
             runtimeActiveTurnIdForUi());
     }
-    syncRuntimeSessionMirror(false);
+    syncRuntimeSessionMirror(false, false, false, false, true);
 }
 
 void Widget::onServerOutput(const QString &chunk)
@@ -293,7 +293,7 @@ void Widget::unlockLoad()
     reflash_output_tool_highlight(bot_predecode_content, themeTextPrimary());
     recordAppendText(__idx, bot_predecode_content);
     // Track the injected system record so later prompt refreshes reuse it instead of duplicating blocks
-    if (!ui_messagesArray.isEmpty())
+    if (!legacySessionMessages().isEmpty())
     {
         recordEntries_[__idx].msgIndex = 0;
     }

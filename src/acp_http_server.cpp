@@ -9,10 +9,6 @@
 #include <QFileInfo>
 #include <QHostAddress>
 #include <QJsonDocument>
-#include <QNetworkAccessManager>
-#include <QNetworkReply>
-#include <QNetworkRequest>
-#include <QPointer>
 #include <QTcpSocket>
 #include <memory>
 
@@ -57,8 +53,7 @@ QString normalizePath(const QString &raw)
 
 AcpHttpServer::AcpHttpServer(AcpRuntime *runtime, QObject *parent)
     : QObject(parent),
-      runtime_(runtime),
-      network_(new QNetworkAccessManager(this))
+      runtime_(runtime)
 {
     connect(&server_, &QTcpServer::newConnection, this, &AcpHttpServer::handleNewConnection);
 }
@@ -359,34 +354,8 @@ QByteArray AcpHttpServer::contentTypeForPath(const QString &path) const
 
 void AcpHttpServer::proxyModels(QTcpSocket *socket, const QMap<QByteArray, QByteArray> &headers)
 {
-    if (!runtime_ || runtime_->bridgeModeEnabled() || !runtime_->linkModeEnabled())
-    {
-        writeJson(socket, 200, QByteArrayLiteral("OK"), runtime_ ? runtime_->modelsPayload() : QJsonObject());
-        return;
-    }
-
-    const QString endpoint = runtime_->modelsEndpoint();
-    const QUrl url = QUrl::fromUserInput(endpoint);
-    if (!url.isValid())
-    {
-        QJsonObject payload;
-        payload.insert(QStringLiteral("error"), QStringLiteral("Invalid remote models endpoint"));
-        payload.insert(QStringLiteral("endpoint"), endpoint);
-        writeJson(socket, 502, QByteArrayLiteral("Bad Gateway"), payload);
-        return;
-    }
-
-    QNetworkRequest request(url);
-    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
-    if (headers.contains(QByteArrayLiteral("authorization")))
-        request.setRawHeader("Authorization", headers.value(QByteArrayLiteral("authorization")));
-    else if (!runtime_->configuredApiKey().isEmpty())
-        request.setRawHeader("Authorization", QByteArray("Bearer ") + runtime_->configuredApiKey().toUtf8());
-    if (headers.contains(QByteArrayLiteral("accept")))
-        request.setRawHeader("Accept", headers.value(QByteArrayLiteral("accept")));
-
-    QNetworkReply *reply = network_->get(request);
-    forwardReply(socket, reply, false);
+    Q_UNUSED(headers);
+    writeJson(socket, 200, QByteArrayLiteral("OK"), runtime_ ? runtime_->modelsPayload() : QJsonObject());
 }
 
 void AcpHttpServer::proxyChatCompletions(QTcpSocket *socket,
@@ -420,9 +389,10 @@ void AcpHttpServer::proxyChatCompletions(QTcpSocket *socket,
     }
     const bool streaming = requestObject.value(QStringLiteral("stream")).toBool(false);
 
-    if (runtime_->directRuntimeEnabled() || runtime_->bridgeModeEnabled())
+    const bool bridgeRoute = runtime_->bridgeModeEnabled();
+    const bool directRoute = !bridgeRoute && runtime_->directRuntimeEnabled();
+    if (bridgeRoute || directRoute)
     {
-        const bool directRuntime = runtime_->directRuntimeEnabled();
         QString errorMessage;
         if (!streaming)
         {
@@ -441,7 +411,7 @@ void AcpHttpServer::proxyChatCompletions(QTcpSocket *socket,
         writeStreamHeaders(socket, 200, QByteArrayLiteral("OK"), QByteArrayLiteral("text/event-stream; charset=utf-8"));
         const QJsonObject response = runtime_->streamChatCompletion(
             requestObject,
-            [socket, directRuntime](const QString &role, const QString &chunkText)
+            [socket, directRoute](const QString &role, const QString &chunkText)
             {
                 if (!socket || chunkText.isEmpty()) return;
                 QJsonObject delta;
@@ -456,10 +426,10 @@ void AcpHttpServer::proxyChatCompletions(QTcpSocket *socket,
                 QJsonArray choices;
                 choices.append(choice);
                 QJsonObject chunk;
-                chunk.insert(QStringLiteral("id"), directRuntime ? QStringLiteral("chatcmpl-runtime") : QStringLiteral("chatcmpl-bridge"));
+                chunk.insert(QStringLiteral("id"), directRoute ? QStringLiteral("chatcmpl-runtime") : QStringLiteral("chatcmpl-bridge"));
                 chunk.insert(QStringLiteral("object"), QStringLiteral("chat.completion.chunk"));
                 chunk.insert(QStringLiteral("created"), static_cast<qint64>(QDateTime::currentSecsSinceEpoch()));
-                chunk.insert(QStringLiteral("model"), directRuntime ? QStringLiteral("runtime") : QStringLiteral("bridge"));
+                chunk.insert(QStringLiteral("model"), directRoute ? QStringLiteral("runtime") : QStringLiteral("bridge"));
                 chunk.insert(QStringLiteral("choices"), choices);
                 socket->write("data: ");
                 socket->write(QJsonDocument(chunk).toJson(QJsonDocument::Compact));
@@ -482,102 +452,11 @@ void AcpHttpServer::proxyChatCompletions(QTcpSocket *socket,
         return;
     }
 
-    const QString endpoint = runtime_->chatCompletionsEndpoint();
-    const QUrl url = QUrl::fromUserInput(endpoint);
-    if (!url.isValid())
-    {
-        QJsonObject payload;
-        payload.insert(QStringLiteral("error"), QStringLiteral("Invalid chat endpoint"));
-        payload.insert(QStringLiteral("endpoint"), endpoint);
-        writeJson(socket, 502, QByteArrayLiteral("Bad Gateway"), payload);
-        return;
-    }
-
-    QNetworkRequest request(url);
-    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
-    if (headers.contains(QByteArrayLiteral("authorization")))
-        request.setRawHeader("Authorization", headers.value(QByteArrayLiteral("authorization")));
-    else if (!runtime_->configuredApiKey().isEmpty())
-        request.setRawHeader("Authorization", QByteArray("Bearer ") + runtime_->configuredApiKey().toUtf8());
-    if (headers.contains(QByteArrayLiteral("accept")))
-        request.setRawHeader("Accept", headers.value(QByteArrayLiteral("accept")));
-
-    QNetworkReply *reply = network_->post(request, QJsonDocument(requestObject).toJson(QJsonDocument::Compact));
-    forwardReply(socket, reply, streaming);
-}
-
-void AcpHttpServer::forwardReply(QTcpSocket *socket, QNetworkReply *reply, bool streaming)
-{
-    QPointer<QTcpSocket> safeSocket(socket);
-    QPointer<QNetworkReply> safeReply(reply);
-    auto headersSent = std::make_shared<bool>(false);
-
-    if (safeSocket)
-    {
-        connect(safeSocket, &QTcpSocket::disconnected, reply, [safeReply]()
-        {
-            if (safeReply) safeReply->abort();
-        });
-    }
-
-    if (streaming)
-    {
-        connect(reply, &QNetworkReply::readyRead, this, [this, safeSocket, safeReply, headersSent]()
-        {
-            if (!safeSocket || !safeReply) return;
-            const int statusCode = safeReply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-            if (!*headersSent)
-            {
-                const QVariant ct = safeReply->header(QNetworkRequest::ContentTypeHeader);
-                const QByteArray contentType = ct.isValid() ? ct.toString().toUtf8() : QByteArrayLiteral("text/event-stream; charset=utf-8");
-                writeStreamHeaders(safeSocket, statusCode > 0 ? statusCode : 200, QByteArray(), contentType);
-                *headersSent = true;
-            }
-            const QByteArray chunk = safeReply->readAll();
-            if (!chunk.isEmpty()) safeSocket->write(chunk);
-        });
-    }
-
-    connect(reply, &QNetworkReply::finished, this, [this, safeSocket, safeReply, headersSent, streaming]()
-    {
-        if (!safeReply)
-        {
-            if (safeSocket) safeSocket->disconnectFromHost();
-            return;
-        }
-
-        const int statusCode = safeReply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-        const QVariant ct = safeReply->header(QNetworkRequest::ContentTypeHeader);
-        const QByteArray contentType = ct.isValid() ? ct.toString().toUtf8() : QByteArrayLiteral("application/json; charset=utf-8");
-        const QByteArray responseBody = safeReply->readAll();
-        const bool hasHttpStatus = statusCode > 0;
-
-        if (streaming && *headersSent)
-        {
-            if (!responseBody.isEmpty() && safeSocket) safeSocket->write(responseBody);
-            if (safeSocket) safeSocket->disconnectFromHost();
-            safeReply->deleteLater();
-            return;
-        }
-
-        if (hasHttpStatus)
-        {
-            if (safeSocket)
-                writeResponse(safeSocket, statusCode, QByteArray(), contentType, responseBody);
-        }
-        else if (safeReply->error() != QNetworkReply::NoError)
-        {
-            QJsonObject payload;
-            payload.insert(QStringLiteral("error"), safeReply->errorString());
-            if (safeSocket)
-                writeJson(safeSocket, 502, QByteArrayLiteral("Bad Gateway"), payload);
-        }
-        else if (safeSocket)
-        {
-            writeResponse(safeSocket, 200, QByteArrayLiteral("OK"), contentType, responseBody);
-        }
-        safeReply->deleteLater();
-    });
+    Q_UNUSED(headers);
+    QJsonObject payload;
+    payload.insert(QStringLiteral("error"), QStringLiteral("EVA runtime or bridge is unavailable; /v1/chat/completions will not bypass EVA and call the model directly."));
+    payload.insert(QStringLiteral("state"), runtime_->backendStatePayload());
+    writeJson(socket, 503, QByteArrayLiteral("Service Unavailable"), payload);
 }
 
 void AcpHttpServer::writeJson(QTcpSocket *socket, int statusCode, const QByteArray &reason, const QJsonObject &payload)

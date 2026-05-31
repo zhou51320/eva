@@ -4,12 +4,14 @@
 #include "../utils/textparse.h"
 #include "../utils/flowtracer.h"
 #include "../utils/openai_compat.h"
+#include "../utils/devicemanager.h"
 #include <QDateTime>
 #include <QDir>
 #include <QDirIterator>
 #include <QUrl>
 #include <QHostInfo>
 #include <QFileInfo>
+#include <QSettings>
 #include <QTextCharFormat>
 #include <algorithm>
 
@@ -89,6 +91,69 @@ QString normalizeLinkEndpoint(const QString &rawEndpoint)
         }
     }
     return url.toString(QUrl::RemoveFragment);
+}
+
+QJsonObject widgetCapabilityPayload(const QString &configPath,
+                                    bool calculator,
+                                    bool knowledge,
+                                    bool controller,
+                                    bool stablediffusion,
+                                    bool engineer,
+                                    bool mcp,
+                                    int toolCallMode)
+{
+    QSettings settings(configPath, QSettings::IniFormat);
+    QStringList enabledTools = settings.value(QStringLiteral("enabled_tools")).toStringList();
+    enabledTools.removeDuplicates();
+
+    auto appendIfEnabled = [&enabledTools](const QString &id, bool enabled)
+    {
+        if (enabled && !enabledTools.contains(id)) enabledTools.append(id);
+    };
+    appendIfEnabled(QStringLiteral("calculator"), calculator);
+    appendIfEnabled(QStringLiteral("knowledge"), knowledge);
+    appendIfEnabled(QStringLiteral("controller"), controller);
+    appendIfEnabled(QStringLiteral("stablediffusion"), stablediffusion);
+    appendIfEnabled(QStringLiteral("engineer"), engineer);
+    appendIfEnabled(QStringLiteral("mcp"), mcp);
+
+    const QString ttsModelPath = settings.value(QStringLiteral("ttscpp_modelpath")).toString().trimmed();
+    const QString ttsProgramPath = DeviceManager::programPath(QStringLiteral("tts-cli"));
+
+    QJsonObject tools;
+    tools.insert(QStringLiteral("calculator"), calculator);
+    tools.insert(QStringLiteral("knowledge"), knowledge);
+    tools.insert(QStringLiteral("controller"), controller);
+    tools.insert(QStringLiteral("stablediffusion"), stablediffusion);
+    tools.insert(QStringLiteral("engineer"), engineer);
+    tools.insert(QStringLiteral("mcp"), mcp);
+
+    QJsonObject tts;
+    tts.insert(QStringLiteral("model_path"), ttsModelPath);
+    tts.insert(QStringLiteral("model_configured"), !ttsModelPath.isEmpty() && QFileInfo::exists(ttsModelPath));
+    tts.insert(QStringLiteral("program_path"), ttsProgramPath);
+    tts.insert(QStringLiteral("program_available"), !ttsProgramPath.isEmpty() && QFileInfo::exists(ttsProgramPath));
+
+    QJsonObject payload;
+    payload.insert(QStringLiteral("chat"), true);
+    payload.insert(QStringLiteral("stream"), true);
+    payload.insert(QStringLiteral("reset"), true);
+    payload.insert(QStringLiteral("stop"), true);
+    payload.insert(QStringLiteral("tools"), tools);
+    payload.insert(QStringLiteral("configured_tools"), tools);
+    payload.insert(QStringLiteral("tools_enabled"), calculator || knowledge || controller || stablediffusion || engineer || mcp);
+    payload.insert(QStringLiteral("enabled_tools"), QJsonArray::fromStringList(enabledTools));
+    payload.insert(QStringLiteral("configured_tools_list"), QJsonArray::fromStringList(enabledTools));
+    payload.insert(QStringLiteral("tool_call_mode"), toolCallMode);
+    payload.insert(QStringLiteral("full_eva_stack"), true);
+    payload.insert(QStringLiteral("tool_execution_route"), QStringLiteral("widget_bridge"));
+    payload.insert(QStringLiteral("conversation_owner"), QStringLiteral("widget"));
+    payload.insert(QStringLiteral("message_input_mode"), QStringLiteral("latest_user_text"));
+    payload.insert(QStringLiteral("knowledge"), knowledge);
+    payload.insert(QStringLiteral("mcp"), mcp);
+    payload.insert(QStringLiteral("tts"), tts);
+    payload.insert(QStringLiteral("tts_related_output"), tts.value(QStringLiteral("model_configured")).toBool() || tts.value(QStringLiteral("program_available")).toBool());
+    return payload;
 }
 } // namespace
 
@@ -191,11 +256,12 @@ void Widget::set_api()
     recordAppendText(__idx, ui_DATES.date_prompt);
     lastSystemRecordIndex_ = __idx;
     // 重置对话消息并注入系统指令
-    ui_messagesArray = QJsonArray();
+    QJsonArray sessionMessages;
     QJsonObject systemMessage;
     systemMessage.insert("role", DEFAULT_SYSTEM_NAME);
     systemMessage.insert("content", ui_DATES.date_prompt);
-    ui_messagesArray.append(systemMessage);
+    sessionMessages.append(systemMessage);
+    setLegacySessionMessages(sessionMessages);
     recordEntries_[__idx].msgIndex = 0;
     // start a new persistent history session in LINK mode
     if (history_)
@@ -251,8 +317,8 @@ void Widget::tool_testhandleTimeout()
     data.top_k = settings.top_k;
     data.top_p = settings.hid_top_p;
     data.n_predict = settings.hid_npredict;
-    data.messagesArray = ui_messagesArray;
-    data.id_slot = currentSlotId_;
+    data.messagesArray = legacySessionMessages();
+    data.id_slot = sessionSlotId();
 
     emit_send(data);
 }
@@ -924,6 +990,15 @@ QJsonObject Widget::buildAcpBridgeState() const
     state.insert(QStringLiteral("lora_path"), settings.lorapath);
     state.insert(QStringLiteral("api_endpoint"), linkMode ? stateApis.api_endpoint : QString());
     state.insert(QStringLiteral("api_model"), linkMode ? stateApis.api_model : QString());
+    state.insert(QStringLiteral("capabilities"),
+                 widgetCapabilityPayload(QDir(applicationDirPath).filePath(QStringLiteral("EVA_TEMP/eva_config.ini")),
+                                         ui_calculator_ischecked,
+                                         ui_knowledge_ischecked,
+                                         ui_controller_ischecked,
+                                         ui_stablediffusion_ischecked,
+                                         ui_engineer_ischecked,
+                                         ui_MCPtools_ischecked,
+                                         ui_tool_call_mode));
     state.insert(QStringLiteral("current_task"), hasRuntime ? runtimeState.currentTask : QString());
     state.insert(QStringLiteral("ui_state"), hasRuntime ? conversationModeName(runtimeState.conversationMode)
                                                         : conversationModeName(runtimeConversationModeForUi()));
@@ -1284,7 +1359,7 @@ QJsonObject Widget::buildControlSnapshot() const
     snap.insert(QStringLiteral("active_turn_id"), static_cast<qint64>(turnId));
     snap.insert(QStringLiteral("phase"), hasRuntime ? runtimePhaseName(runtimeState.phase) : controlUiPhase_);
     snap.insert(QStringLiteral("current_task"), hasRuntime ? runtimeState.currentTask : QString());
-    snap.insert(QStringLiteral("message_count"), hasRuntime ? runtimeState.messageCount : ui_messagesArray.size());
+    snap.insert(QStringLiteral("message_count"), hasRuntime ? runtimeState.messageCount : legacySessionMessages().size());
     snap.insert(QStringLiteral("record_count"), recordEntries_.size());
     snap.insert(QStringLiteral("title"), windowTitle());
     snap.insert(QStringLiteral("mode"), hasRuntime ? runtimeModeName(runtimeState.mode)

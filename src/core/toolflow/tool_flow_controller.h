@@ -13,11 +13,12 @@ public:
     explicit ToolFlowController(QObject *owner);
 
     void recvPushover();
-    void recvToolCalls(const QString &payload);
+    void recvToolCalls(const QString &payload, bool runtimeDispatched = false);
     void recvToolPushover(QString toolResult);
 
 private:
     ToolFlowHostPort *hostPort() const;
 
     ToolFlowHostPort *host_ = nullptr; // 不拥有，工具流宿主适配端口
+    bool runtimeDispatchedToolPending_ = false;
 };

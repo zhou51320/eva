@@ -38,16 +38,17 @@ void Widget::normal_finish_pushover()
         kvTokensTurn_ = kvPromptTokensTurn_ + qMax(0, kvStreamedTurn_);
         // 调试：LINK 模式下 reasoning tokens（思考 token）也计入本轮 KV 占用，便于观察真实推理负载。
         // 此处输出一个“完结汇总”，用于和 net 层的 prompt/stream 统计对齐。
-        if (lastReasoningTokens_ > 0)
+        const int reasoningTokens = runtimeReasoningTokensForUi();
+        if (reasoningTokens > 0)
         {
             FlowTracer::log(
                 FlowChannel::Session,
                 QStringLiteral("link:kv finish(incl reasoning) reasoning=%1 kvUsed=%2 kvStream=%3 kvTurn=%4 prompt=%5 usedBefore=%6")
-                    .arg(lastReasoningTokens_)
-                    .arg(kvUsed_)
-                    .arg(kvStreamedTurn_)
-                    .arg(kvTokensTurn_)
-                    .arg(kvPromptTokensTurn_)
+                    .arg(reasoningTokens)
+                    .arg(runtimeKvUsedForUi())
+                    .arg(runtimeStreamedTokensForUi())
+                    .arg(turnTokensForToolFlow())
+                    .arg(runtimePromptTokensForUi())
                     .arg(kvUsedBeforeTurn_),
                 runtimeActiveTurnIdForUi());
         }
@@ -337,15 +338,13 @@ void Widget::on_reset_clicked()
     currentAssistantIndex_ = -1;
     pendingAssistantHeaderReset_ = false;
     // 重置压缩状态，避免残留影响后续对话
-    compactionInFlight_ = false;
-    compactionQueued_ = false;
+    finishCompactionRequest();
+    setCompactionQueued(false);
     compactionHeaderPrinted_ = false;
     currentCompactIndex_ = -1;
-    compactionFromIndex_ = -1;
-    compactionToIndex_ = -1;
+    clearCompactionRange();
     compactionReason_.clear();
-    compactionPendingHasInput_ = false;
-    compactionPendingInput_ = InputPack();
+    takePendingCompactionInput();
 
     const bool engineerActive = date_ui && date_ui->engineer_checkbox && date_ui->engineer_checkbox->isChecked();
 
@@ -378,12 +377,13 @@ void Widget::on_reset_clicked()
     recordClear(); // 待机界面状态
 
     // 请求式统一处理（本地/远端）
-    ui_messagesArray = QJsonArray(); // 清空
+    QJsonArray sessionMessages;
     // 构造系统指令
     QJsonObject systemMessage;
     systemMessage.insert("role", DEFAULT_SYSTEM_NAME);
     systemMessage.insert("content", ui_DATES.date_prompt);
-    ui_messagesArray.append(systemMessage);
+    sessionMessages.append(systemMessage);
+    setLegacySessionMessages(sessionMessages);
     ensureSystemHeader(ui_DATES.date_prompt);
     ensureOutputAtBottom();
 

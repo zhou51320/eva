@@ -1230,10 +1230,12 @@ void Widget::auto_save_user()
 // ???????????????
 void Widget::emit_send(const ENDPOINT_DATA &data)
 {
-    const quint64 turnId = data.turn_id > 0 ? data.turn_id : runtimeActiveTurnIdForUi();
-    const APIS runtimeApis = sessionApisSnapshot();
-    RequestSnapshot snapshot = runtime_
-                                   ? runtime_->buildRequestSnapshot(runtimeApis, data, wordsObj, language_flag, turnId)
-                                   : RequestSnapshot{runtimeApis, data, wordsObj, language_flag, turnId};
-    emit ui2net_send(snapshot);
+    RuntimeSendMessageCommand command;
+    command.apis = sessionApisSnapshot();
+    command.endpoint = data;
+    command.frontendMessages = data.messagesArray;
+    command.wordsObj = wordsObj;
+    command.languageFlag = language_flag;
+    command.turnId = data.turn_id > 0 ? data.turn_id : runtimeActiveTurnIdForUi();
+    emit ui2runtime_send(command);
 }

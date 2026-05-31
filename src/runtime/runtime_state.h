@@ -81,6 +81,7 @@ struct RuntimeState
     bool backendReady = false;
     bool turnActive = false;
     bool toolActive = false;
+    bool toolDriverAttached = false;
     quint64 activeTurnId = 0;
     int slotId = -1;
 
@@ -103,6 +104,10 @@ struct RuntimeState
     QString lastToolCallName;
     bool compactionActive = false;
     bool compactionQueued = false;
+    int compactionFromIndex = -1;
+    int compactionToIndex = -1;
+    bool compactionPendingInput = false;
+    QString compactionReason;
     QString historySessionId;
     QJsonArray messages;
 
@@ -149,6 +154,7 @@ inline QJsonObject runtimeStateToJson(const RuntimeState &state)
     obj.insert(QStringLiteral("api_completion_endpoint"), state.apis.api_completion_endpoint);
     obj.insert(QStringLiteral("turn_active"), state.turnActive);
     obj.insert(QStringLiteral("tool_active"), state.toolActive);
+    obj.insert(QStringLiteral("tool_driver_attached"), state.toolDriverAttached);
     obj.insert(QStringLiteral("active_turn_id"), QString::number(state.activeTurnId));
     obj.insert(QStringLiteral("slot_id"), state.slotId);
     obj.insert(QStringLiteral("kv_used"), state.kvUsed);
@@ -170,6 +176,10 @@ inline QJsonObject runtimeStateToJson(const RuntimeState &state)
     obj.insert(QStringLiteral("last_tool_call_name"), state.lastToolCallName);
     obj.insert(QStringLiteral("compaction_active"), state.compactionActive);
     obj.insert(QStringLiteral("compaction_queued"), state.compactionQueued);
+    obj.insert(QStringLiteral("compaction_from_index"), state.compactionFromIndex);
+    obj.insert(QStringLiteral("compaction_to_index"), state.compactionToIndex);
+    obj.insert(QStringLiteral("compaction_pending_input"), state.compactionPendingInput);
+    obj.insert(QStringLiteral("compaction_reason"), state.compactionReason);
     obj.insert(QStringLiteral("compaction_enabled"), state.compactionSettings.enabled);
     obj.insert(QStringLiteral("compaction_trigger_ratio"), state.compactionSettings.trigger_ratio);
     obj.insert(QStringLiteral("compaction_reserve_tokens"), state.compactionSettings.reserve_tokens);

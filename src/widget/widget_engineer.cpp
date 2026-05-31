@@ -893,15 +893,17 @@ void Widget::refreshEngineerPromptBlock()
     }
     get_date(shouldApplySandboxNow());
 
-    if (!ui_messagesArray.isEmpty())
+    QJsonArray sessionMessages = legacySessionMessages();
+    if (!sessionMessages.isEmpty())
     {
-        QJsonObject system = ui_messagesArray.first().toObject();
+        QJsonObject system = sessionMessages.first().toObject();
         system.insert(QStringLiteral("content"), ui_DATES.date_prompt);
-        ui_messagesArray.replace(0, system);
+        sessionMessages.replace(0, system);
+        setLegacySessionMessages(sessionMessages);
     }
     if (history_ && !history_->sessionId().isEmpty())
     {
-        history_->rewriteAllMessages(ui_messagesArray);
+        history_->rewriteAllMessages(sessionMessages);
     }
     syncRuntimeSessionMirror(true);
     if (lastSystemRecordIndex_ >= 0)

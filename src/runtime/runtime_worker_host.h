@@ -3,8 +3,8 @@
 #include <QObject>
 #include <QThread>
 
-// RuntimeWorkerHost 先集中运行层线程生命周期。
-// 服务对象会在后续迁移任务中逐步 moveToThread 到这些线程。
+// RuntimeWorkerHost 集中运行层线程生命周期。
+// EvaRuntime 创建/接管的服务对象会 moveToThread 到这些线程。
 class RuntimeWorkerHost : public QObject
 {
   public:

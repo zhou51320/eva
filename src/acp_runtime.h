@@ -38,9 +38,6 @@ class AcpRuntime : public QObject
     bool linkModeEnabled() const;
     bool bridgeModeEnabled() const;
     bool directRuntimeEnabled() const;
-    QString modelsEndpoint() const;
-    QString chatCompletionsEndpoint() const;
-    QString configuredApiKey() const;
     QString configuredApiModel() const;
     bool resetConversation(QString *errorMessage);
     bool stopRuntime(QString *errorMessage);

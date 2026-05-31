@@ -8,9 +8,16 @@
 #include "runtime/runtime_events.h"
 #include "runtime/runtime_network_driver.h"
 #include "runtime/runtime_state.h"
+#include "runtime/runtime_tool_driver.h"
 #include "service/net/request_snapshot.h"
 
+class QThread;
 class RuntimeWorkerHost;
+class NetClient;
+class ToolExecutor;
+class xMcp;
+class cpuChecker;
+class gpuChecker;
 
 // EVA 无窗口运行层入口。
 // 当前第一版只建立稳定边界；实际装载/推理会在后续任务中逐步从 Widget 迁入。
@@ -27,6 +34,12 @@ class EvaRuntime : public QObject
     void shutdown();
 
     void attachNetworkDriver(RuntimeNetworkDriver *driver, bool takeOwnership = false);
+    void attachToolDriver(RuntimeToolDriver *driver);
+    NetClient *createNetworkClient();
+    ToolExecutor *createToolExecutor(const QString &applicationDirPath = QStringLiteral("./"));
+    xMcp *createMcpManager();
+    cpuChecker *createCpuChecker();
+    gpuChecker *createGpuChecker();
     RuntimeState stateSnapshot() const;
     RequestSnapshot buildRequestSnapshot(const APIS &apis,
                                          const ENDPOINT_DATA &endpoint,
@@ -61,6 +74,10 @@ class EvaRuntime : public QObject
                                    const COMPACTION_SETTINGS &compactionSettings,
                                    bool compactionActive,
                                    bool compactionQueued,
+                                   int compactionFromIndex,
+                                   int compactionToIndex,
+                                   bool compactionPendingInput,
+                                   const QString &compactionReason,
                                    bool turnActive,
                                    bool toolActive,
                                    quint64 activeTurnId,
@@ -97,10 +114,13 @@ class EvaRuntime : public QObject
   private:
     ENDPOINT_DATA buildEndpointDataForMessage(const RuntimeSendMessageCommand &command, quint64 turnId) const;
     bool dispatchSnapshot(RequestSnapshot snapshot, bool streamRequested, QString *errorMessage);
+    bool dispatchFirstToolCall(const QString &payload, QString *errorMessage);
     void setPhase(RuntimePhase phase, const QString &error = QString());
     void emitState();
     void emitErrorEvent(RuntimeEventType type, const QString &name, const QString &error);
     void emitMetricEvent(const QJsonObject &payload);
+    void ensureWorkerHostStarted();
+    void moveOwnedWorkerObject(QObject *object, QThread *thread);
 
   private slots:
     void onNetworkToolCalls(const QString &payload);
@@ -118,6 +138,9 @@ class EvaRuntime : public QObject
     RuntimeState state_;
     RuntimeWorkerHost *workers_ = nullptr;
     RuntimeNetworkDriver *networkDriver_ = nullptr;
+    RuntimeToolDriver *toolDriver_ = nullptr;
+    QObject *ownedToolExecutor_ = nullptr;
+    QObject *ownedMcpManager_ = nullptr;
     bool ownsNetworkDriver_ = false;
     bool activeStreamRequested_ = true;
     QString activeResponseText_;

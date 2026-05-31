@@ -5,6 +5,7 @@
 #include "core/toolflow/tool_flow_controller.h"
 #include "runtime/eva_runtime.h"
 #include "service/backend/backend_coordinator.h"
+#include "service/backend/backend_coordinator_widget_port.h"
 
 #include "controller_overlay.h"
 #include "terminal_pane.h"
@@ -67,7 +68,11 @@ Widget::Widget(QWidget *parent, QString applicationDirPath_)
     // ??????????
     sessionController_ = new SessionController(this);
     toolFlowController_ = new ToolFlowController(this);
-    backendCoordinator_ = new BackendCoordinator(this);
+    backendCoordinatorPort_ = std::make_unique<WidgetBackendCoordinatorPort>(this);
+    BackendCoordinatorContext backendContext;
+    backendContext.ownerObject = this;
+    backendContext.port = backendCoordinatorPort_.get();
+    backendCoordinator_ = new BackendCoordinator(backendContext, this);
     if (ui->recordBar)
     {
         connect(ui->recordBar, &RecordBar::nodeClicked, this, &Widget::onRecordClicked);

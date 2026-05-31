@@ -193,7 +193,7 @@ bool Widget::dispatchScheduledText(const QString &text, const QJsonObject &job)
 void Widget::tryDispatchScheduledJobs()
 {
     if (scheduledDispatchQueue_.isEmpty()) return;
-    if (runtimeBusyForUi() || engineerProxyRuntime_.active || compactionInFlight_ || compactionQueued_)
+    if (runtimeBusyForUi() || engineerProxyRuntime_.active || compactionInFlight() || compactionQueued())
     {
         return;
     }

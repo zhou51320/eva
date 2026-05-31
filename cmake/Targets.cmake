@@ -42,6 +42,7 @@ add_executable(
     src/runtime/runtime_events.h
     src/runtime/runtime_network_driver.h
     src/runtime/runtime_state.h
+    src/runtime/runtime_tool_driver.h
     src/runtime/runtime_worker_host.cpp
     src/runtime/runtime_worker_host.h
     src/service/net/net_client.cpp
@@ -49,6 +50,9 @@ add_executable(
     src/service/net/request_snapshot.h
     src/service/backend/backend_coordinator.cpp
     src/service/backend/backend_coordinator.h
+    src/service/backend/backend_coordinator_port.h
+    src/service/backend/backend_coordinator_widget_port.cpp
+    src/service/backend/backend_coordinator_widget_port.h
     src/service/tools/tool_executor.cpp
     src/service/tools/tool_executor.h
     src/service/tools/tool_registry.cpp
@@ -137,6 +141,7 @@ set_source_files_properties(
     PROPERTIES SKIP_AUTOUIC ON)
 set_source_files_properties(
     src/service/backend/backend_coordinator.cpp
+    src/service/backend/backend_coordinator_widget_port.cpp
     PROPERTIES SKIP_AUTOUIC ON)
 ## Executable name
 # Linux: keep binary name as plain "eva" for runtime/AppDir consistency
@@ -180,6 +185,7 @@ add_executable(
     src/runtime/runtime_events.h
     src/runtime/runtime_network_driver.h
     src/runtime/runtime_state.h
+    src/runtime/runtime_tool_driver.h
     src/runtime/runtime_worker_host.cpp
     src/runtime/runtime_worker_host.h
     src/service/net/net_client.cpp
@@ -267,7 +273,6 @@ if (TARGET backends)
 endif()
 
 message(STATUS "eva型号: ${eva_OUTPUT_NAME}")
-
 
 
 

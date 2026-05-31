@@ -66,6 +66,12 @@ EVA SHALL publish events that can be consumed by Qt Widget, ACP/WebUI, and futur
 - **WHEN** a tool call is parsed and executed
 - **THEN** runtime MUST emit tool start, tool output/result, and tool completion events.
 
+#### Scenario: Runtime receives model tool calls
+
+- **WHEN** the network layer reports OpenAI-style `tool_calls` or `function_call` payloads
+- **THEN** runtime MUST parse the payload into frontend-neutral tool state and dispatch it through a runtime-owned tool driver when one is attached.
+- **AND** runtime MUST report whether a tool driver is attached so frontends do not confuse configured tool schemas with executable tool capability.
+
 #### Scenario: Backend logs are produced
 
 - **WHEN** local backend emits lifecycle logs or errors
@@ -92,7 +98,7 @@ The ACP service SHALL be able to host `EvaRuntime` directly after runtime decoup
 #### Scenario: ACP starts without Widget
 
 - **WHEN** `eva_acp` starts and no main EVA window is running
-- **THEN** ACP MUST be able to create `EvaRuntime` and expose load, state, reset, model list, and chat APIs.
+- **THEN** ACP MUST be able to create `EvaRuntime` and expose load, state, reset, stop, model list, and chat APIs.
 
 #### Scenario: ACP is used as WebUI backend
 

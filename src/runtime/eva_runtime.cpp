@@ -2,6 +2,7 @@
 
 #include <QDateTime>
 #include <QFileInfo>
+#include <QJsonDocument>
 #include <QMetaObject>
 #include <QThread>
 #include <QUrl>
@@ -9,7 +10,12 @@
 
 #include "runtime/runtime_bootstrap.h"
 #include "runtime/runtime_worker_host.h"
+#include "service/net/net_client.h"
+#include "service/tools/tool_executor.h"
+#include "utils/cpuchecker.h"
+#include "utils/gpuchecker.h"
 #include "utils/openai_compat.h"
+#include "xmcp.h"
 
 namespace
 {
@@ -45,6 +51,82 @@ QString modelLabelFromPath(const QString &path)
 {
     const QFileInfo info(path);
     return info.fileName().isEmpty() ? path : info.fileName();
+}
+
+QJsonArray parseToolCallsPayload(const QString &payload)
+{
+    const QString trimmed = payload.trimmed();
+    if (trimmed.isEmpty()) return QJsonArray();
+
+    QJsonParseError error{};
+    const QJsonDocument doc = QJsonDocument::fromJson(trimmed.toUtf8(), &error);
+    if (error.error != QJsonParseError::NoError) return QJsonArray();
+    if (doc.isArray()) return doc.array();
+    if (!doc.isObject()) return QJsonArray();
+
+    const QJsonObject object = doc.object();
+    const QJsonValue toolCalls = object.value(QStringLiteral("tool_calls"));
+    if (toolCalls.isArray()) return toolCalls.toArray();
+
+    QJsonArray calls;
+    const QJsonValue functionCall = object.value(QStringLiteral("function_call"));
+    if (functionCall.isObject())
+        calls.append(functionCall.toObject());
+    else if (!object.isEmpty())
+        calls.append(object);
+    return calls;
+}
+
+QString toolNameFromCall(const QJsonObject &call)
+{
+    const QString directName = call.value(QStringLiteral("name")).toString().trimmed();
+    if (!directName.isEmpty()) return directName;
+
+    const QJsonObject function = call.value(QStringLiteral("function")).toObject();
+    return function.value(QStringLiteral("name")).toString().trimmed();
+}
+
+bool shouldRuntimeDispatchTool(const QString &toolName)
+{
+    return !toolName.isEmpty() &&
+           toolName != QStringLiteral("answer") &&
+           toolName != QStringLiteral("response") &&
+           toolName != QStringLiteral("system_engineer_proxy") &&
+           toolName != QStringLiteral("schedule_task");
+}
+
+QJsonObject normalizeToolCallForDriver(const QJsonObject &call)
+{
+    QJsonObject normalized = call;
+    const QJsonObject function = call.value(QStringLiteral("function")).toObject();
+    if (!function.isEmpty())
+    {
+        const QString name = function.value(QStringLiteral("name")).toString().trimmed();
+        if (!name.isEmpty()) normalized.insert(QStringLiteral("name"), name);
+
+        const QJsonValue functionArguments = function.value(QStringLiteral("arguments"));
+        if (functionArguments.isObject())
+        {
+            normalized.insert(QStringLiteral("arguments"), functionArguments.toObject());
+        }
+        else if (functionArguments.isString())
+        {
+            QJsonParseError error{};
+            const QJsonDocument doc = QJsonDocument::fromJson(functionArguments.toString().toUtf8(), &error);
+            if (error.error == QJsonParseError::NoError && doc.isObject())
+                normalized.insert(QStringLiteral("arguments"), doc.object());
+        }
+    }
+
+    const QJsonValue arguments = normalized.value(QStringLiteral("arguments"));
+    if (arguments.isString())
+    {
+        QJsonParseError error{};
+        const QJsonDocument doc = QJsonDocument::fromJson(arguments.toString().toUtf8(), &error);
+        if (error.error == QJsonParseError::NoError && doc.isObject())
+            normalized.insert(QStringLiteral("arguments"), doc.object());
+    }
+    return normalized;
 }
 } // namespace
 
@@ -102,6 +184,18 @@ void EvaRuntime::shutdown()
     {
         QMetaObject::invokeMethod(networkDriver_, "stop", Qt::QueuedConnection, Q_ARG(bool, true));
     }
+    if (toolDriver_)
+    {
+        toolDriver_->cancelActiveRuntimeTool();
+    }
+    if (ToolExecutor *tool = qobject_cast<ToolExecutor *>(ownedToolExecutor_))
+    {
+        QMetaObject::invokeMethod(tool, "shutdownDockerSandbox", Qt::BlockingQueuedConnection);
+    }
+    if (xMcp *mcp = qobject_cast<xMcp *>(ownedMcpManager_))
+    {
+        QMetaObject::invokeMethod(mcp, "disconnectAll", Qt::QueuedConnection);
+    }
     if (workers_)
     {
         workers_->stop();
@@ -111,6 +205,9 @@ void EvaRuntime::shutdown()
         networkDriver_ = nullptr;
         ownsNetworkDriver_ = false;
     }
+    toolDriver_ = nullptr;
+    ownedToolExecutor_ = nullptr;
+    ownedMcpManager_ = nullptr;
     state_.initialized = false;
     state_.backendReady = false;
     state_.turnActive = false;
@@ -171,6 +268,60 @@ void EvaRuntime::attachNetworkDriver(RuntimeNetworkDriver *driver, bool takeOwne
             this, &EvaRuntime::onNetworkSpeeds, Qt::QueuedConnection);
     connect(networkDriver_, &RuntimeNetworkDriver::net2ui_turn_counters,
             this, &EvaRuntime::onNetworkTurnCounters, Qt::QueuedConnection);
+}
+
+void EvaRuntime::attachToolDriver(RuntimeToolDriver *driver)
+{
+    toolDriver_ = driver;
+    state_.toolDriverAttached = (toolDriver_ != nullptr);
+    emitState();
+}
+
+NetClient *EvaRuntime::createNetworkClient()
+{
+    if (NetClient *existing = qobject_cast<NetClient *>(networkDriver_))
+        return existing;
+
+    NetClient *client = new NetClient;
+    attachNetworkDriver(client, true);
+    return client;
+}
+
+ToolExecutor *EvaRuntime::createToolExecutor(const QString &applicationDirPath)
+{
+    if (ToolExecutor *existing = qobject_cast<ToolExecutor *>(ownedToolExecutor_))
+        return existing;
+
+    ToolExecutor *tool = new ToolExecutor(applicationDirPath);
+    moveOwnedWorkerObject(tool, workers_ ? workers_->toolThread() : nullptr);
+    ownedToolExecutor_ = tool;
+    attachToolDriver(tool);
+    return tool;
+}
+
+xMcp *EvaRuntime::createMcpManager()
+{
+    if (xMcp *existing = qobject_cast<xMcp *>(ownedMcpManager_))
+        return existing;
+
+    xMcp *mcp = new xMcp;
+    moveOwnedWorkerObject(mcp, workers_ ? workers_->mcpThread() : nullptr);
+    ownedMcpManager_ = mcp;
+    return mcp;
+}
+
+cpuChecker *EvaRuntime::createCpuChecker()
+{
+    cpuChecker *checker = new cpuChecker;
+    moveOwnedWorkerObject(checker, workers_ ? workers_->monitorThread() : nullptr);
+    return checker;
+}
+
+gpuChecker *EvaRuntime::createGpuChecker()
+{
+    gpuChecker *checker = new gpuChecker;
+    moveOwnedWorkerObject(checker, workers_ ? workers_->monitorThread() : nullptr);
+    return checker;
 }
 
 RuntimeState EvaRuntime::stateSnapshot() const
@@ -315,6 +466,10 @@ void EvaRuntime::updateSessionRuntimeState(const QJsonArray &messages,
                                            const COMPACTION_SETTINGS &compactionSettings,
                                            bool compactionActive,
                                            bool compactionQueued,
+                                           int compactionFromIndex,
+                                           int compactionToIndex,
+                                           bool compactionPendingInput,
+                                           const QString &compactionReason,
                                            bool turnActive,
                                            bool toolActive,
                                            quint64 activeTurnId,
@@ -368,6 +523,10 @@ void EvaRuntime::updateSessionRuntimeState(const QJsonArray &messages,
     state_.compactionSettings = compactionSettings;
     state_.compactionActive = compactionActive;
     state_.compactionQueued = compactionQueued;
+    state_.compactionFromIndex = compactionFromIndex;
+    state_.compactionToIndex = compactionToIndex;
+    state_.compactionPendingInput = compactionPendingInput;
+    state_.compactionReason = compactionReason;
     state_.turnActive = turnActive;
     state_.toolActive = toolActive;
     state_.activeTurnId = activeTurnId;
@@ -522,24 +681,26 @@ bool EvaRuntime::resetConversation(const RuntimeResetCommand &command, QString *
 
 bool EvaRuntime::sendMessage(const RuntimeSendMessageCommand &command, QString *errorMessage)
 {
-    if (command.text.trimmed().isEmpty() && command.frontendMessages.isEmpty())
+    const bool hasStructuredEndpoint = !command.endpoint.messagesArray.isEmpty() ||
+                                       !command.endpoint.input_prompt.trimmed().isEmpty() ||
+                                       !command.endpoint.tools.isEmpty();
+    if (command.text.trimmed().isEmpty() && command.frontendMessages.isEmpty() && !hasStructuredEndpoint)
     {
-        const QString error = QStringLiteral("Runtime sendMessage requires text or frontendMessages.");
+        const QString error = QStringLiteral("Runtime sendMessage requires text, frontendMessages, or endpoint data.");
         if (errorMessage) *errorMessage = error;
         emitErrorEvent(RuntimeEventType::CommandRejected, QStringLiteral("sendMessage"), error);
         return false;
     }
 
-    RequestSnapshot snapshot;
-    snapshot.apis = state_.apis;
-    if (snapshot.apis.api_endpoint.trimmed().isEmpty())
-    {
-        snapshot.apis.api_endpoint = state_.endpoint;
-    }
-    const quint64 turnId = static_cast<quint64>(QDateTime::currentMSecsSinceEpoch());
-    snapshot.endpoint = buildEndpointDataForMessage(command, turnId);
-    snapshot.languageFlag = EVA_LANG_ZH;
-    snapshot.turnId = turnId;
+    const quint64 turnId = command.turnId > 0 ? command.turnId : static_cast<quint64>(QDateTime::currentMSecsSinceEpoch());
+    const APIS apis = command.apis.api_endpoint.trimmed().isEmpty() &&
+                              command.apis.api_model.trimmed().isEmpty() &&
+                              command.apis.api_chat_endpoint.trimmed().isEmpty() &&
+                              command.apis.api_completion_endpoint.trimmed().isEmpty()
+                          ? state_.apis
+                          : command.apis;
+    const ENDPOINT_DATA endpoint = buildEndpointDataForMessage(command, turnId);
+    const RequestSnapshot snapshot = buildRequestSnapshot(apis, endpoint, command.wordsObj, command.languageFlag, turnId);
     return dispatchSnapshot(snapshot, command.stream, errorMessage);
 }
 
@@ -563,6 +724,10 @@ void EvaRuntime::setStopRequested(bool stop)
         return;
     }
     QMetaObject::invokeMethod(networkDriver_, "stop", Qt::QueuedConnection, Q_ARG(bool, stop));
+    if (stop && toolDriver_)
+    {
+        toolDriver_->cancelActiveRuntimeTool();
+    }
     if (!stop)
     {
         return;
@@ -619,28 +784,41 @@ void EvaRuntime::updateBackendStatus(BackendLifecycleState lifecycle,
 
 ENDPOINT_DATA EvaRuntime::buildEndpointDataForMessage(const RuntimeSendMessageCommand &command, quint64 turnId) const
 {
-    ENDPOINT_DATA endpoint;
-    endpoint.date_prompt.clear();
-    endpoint.input_prompt = command.text;
-    endpoint.messagesArray = command.frontendMessages;
+    ENDPOINT_DATA endpoint = command.endpoint;
+    if (endpoint.date_prompt.isEmpty())
+        endpoint.date_prompt.clear();
+    if (endpoint.input_prompt.trimmed().isEmpty())
+        endpoint.input_prompt = command.text;
     if (endpoint.messagesArray.isEmpty())
+        endpoint.messagesArray = command.frontendMessages;
+    if (endpoint.messagesArray.isEmpty() && !command.text.trimmed().isEmpty())
     {
         QJsonObject userMessage;
         userMessage.insert(QStringLiteral("role"), QStringLiteral("user"));
         userMessage.insert(QStringLiteral("content"), command.text);
         endpoint.messagesArray.append(userMessage);
     }
-    endpoint.tools = QJsonArray();
-    endpoint.tool_call_mode = DEFAULT_TOOL_CALL_MODE;
-    endpoint.is_complete_state = (state_.conversationMode == ConversationMode::Complete);
-    endpoint.temp = static_cast<float>(state_.settings.temp);
-    endpoint.repeat = state_.settings.repeat;
-    endpoint.top_k = state_.settings.top_k;
-    endpoint.top_p = state_.settings.hid_top_p;
-    endpoint.n_predict = state_.settings.hid_npredict;
-    endpoint.reasoning_effort = state_.settings.reasoning_effort;
-    endpoint.stopwords.clear();
-    endpoint.id_slot = state_.slotId;
+    if (endpoint.tools.isEmpty())
+        endpoint.tools = QJsonArray();
+    if (endpoint.tool_call_mode == 0)
+        endpoint.tool_call_mode = DEFAULT_TOOL_CALL_MODE;
+    endpoint.is_complete_state = endpoint.is_complete_state || (state_.conversationMode == ConversationMode::Complete);
+    if (endpoint.temp <= 0)
+        endpoint.temp = static_cast<float>(state_.settings.temp);
+    if (endpoint.repeat <= 0)
+        endpoint.repeat = state_.settings.repeat;
+    if (endpoint.top_k <= 0)
+        endpoint.top_k = state_.settings.top_k;
+    if (endpoint.top_p <= 0)
+        endpoint.top_p = state_.settings.hid_top_p;
+    if (endpoint.n_predict <= 0)
+        endpoint.n_predict = state_.settings.hid_npredict;
+    if (endpoint.reasoning_effort.trimmed().isEmpty())
+        endpoint.reasoning_effort = state_.settings.reasoning_effort;
+    if (endpoint.stopwords.isEmpty())
+        endpoint.stopwords = state_.stopwords;
+    if (endpoint.id_slot < 0)
+        endpoint.id_slot = state_.slotId;
     endpoint.turn_id = turnId;
     return endpoint;
 }
@@ -690,6 +868,32 @@ bool EvaRuntime::dispatchSnapshot(RequestSnapshot snapshot, bool streamRequested
     return true;
 }
 
+bool EvaRuntime::dispatchFirstToolCall(const QString &payload, QString *errorMessage)
+{
+    if (!toolDriver_)
+    {
+        if (errorMessage) *errorMessage = QStringLiteral("Runtime tool driver is not attached.");
+        return false;
+    }
+
+    const QJsonArray calls = parseToolCallsPayload(payload);
+    if (calls.isEmpty() || !calls.first().isObject())
+    {
+        if (errorMessage) *errorMessage = QStringLiteral("Runtime tool call payload is empty or invalid.");
+        return false;
+    }
+
+    const QJsonObject call = calls.first().toObject();
+    const QString toolName = toolNameFromCall(call);
+    if (!shouldRuntimeDispatchTool(toolName))
+    {
+        if (errorMessage) *errorMessage = QStringLiteral("Runtime skips non-executable tool call: %1.").arg(toolName);
+        return false;
+    }
+
+    return toolDriver_->executeToolCall(normalizeToolCallForDriver(call), state_.activeTurnId, errorMessage);
+}
+
 void EvaRuntime::setPhase(RuntimePhase phase, const QString &error)
 {
     state_.phase = phase;
@@ -729,9 +933,43 @@ void EvaRuntime::emitMetricEvent(const QJsonObject &payload)
     emit runtimeEvent(event);
 }
 
+void EvaRuntime::ensureWorkerHostStarted()
+{
+    if (workers_ && !workers_->isRunning())
+    {
+        workers_->start();
+    }
+}
+
+void EvaRuntime::moveOwnedWorkerObject(QObject *object, QThread *thread)
+{
+    if (!object)
+        return;
+
+    ensureWorkerHostStarted();
+    if (thread && object->thread() != thread)
+    {
+        object->moveToThread(thread);
+    }
+    if (thread)
+    {
+        connect(thread, &QThread::finished,
+                object, &QObject::deleteLater, Qt::UniqueConnection);
+    }
+}
+
 void EvaRuntime::onNetworkToolCalls(const QString &payload)
 {
     state_.toolActive = true;
+    state_.phase = RuntimePhase::ToolRunning;
+    const QJsonArray calls = parseToolCallsPayload(payload);
+    if (!calls.isEmpty() && calls.first().isObject())
+    {
+        const QJsonObject call = calls.first().toObject();
+        state_.pendingToolName = toolNameFromCall(call);
+        state_.pendingToolCallId = call.value(QStringLiteral("id")).toString();
+        state_.lastToolCallName = state_.pendingToolName;
+    }
     state_.updatedAt = QDateTime::currentDateTimeUtc();
     RuntimeEvent event;
     event.type = RuntimeEventType::ToolStarted;
@@ -739,6 +977,15 @@ void EvaRuntime::onNetworkToolCalls(const QString &payload)
     event.name = QStringLiteral("tool_calls_detected");
     event.text = payload;
     event.payload.insert(QStringLiteral("raw"), payload);
+    event.payload.insert(QStringLiteral("tool_driver_attached"), toolDriver_ != nullptr);
+    if (!calls.isEmpty()) event.payload.insert(QStringLiteral("calls"), calls);
+    if (toolDriver_)
+    {
+        QString toolError;
+        const bool dispatched = dispatchFirstToolCall(payload, &toolError);
+        event.payload.insert(QStringLiteral("runtime_tool_dispatched"), dispatched);
+        if (!toolError.isEmpty()) event.payload.insert(QStringLiteral("runtime_tool_error"), toolError);
+    }
     emit runtimeEvent(event);
     emitState();
 }

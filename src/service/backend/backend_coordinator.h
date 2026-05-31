@@ -8,19 +8,21 @@
 
 #include "runtime/runtime_events.h"
 
+class BackendCoordinatorPort;
+
 // 后端协调器消费的运行时上下文。
-// 这里不保存 Widget 指针：后续无窗口 Runtime 可以只注入事件槽和运行时状态；
-// 当前窗口版仍通过 ownerObject 作为 Qt 信号/定时器接收者完成兼容过渡。
+// 不保存也不解析 Widget 指针；桌面版通过 BackendCoordinatorPort 适配器注入状态与动作，
+// 无窗口 Runtime 可以注入自己的端口实现和事件槽。
 struct BackendCoordinatorContext
 {
     QObject *ownerObject = nullptr;
+    BackendCoordinatorPort *port = nullptr;
     std::function<void(RuntimeEvent)> publishEvent;
     std::function<void(BackendLifecycleState, bool, QString, QString, QString)> updateBackendStatus;
 };
 
-// 后端协调器：集中本地后端生命周期、代理端口与惰性卸载逻辑
-// 注意：当前仍有旧 Widget 适配调用，新增代码应优先通过 BackendCoordinatorContext
-// 发布 RuntimeEvent，并逐步把配置/状态迁入运行时上下文。
+// 后端协调器：集中本地后端生命周期、代理端口与惰性卸载逻辑。
+// 具体前端状态/动作均通过 BackendCoordinatorPort 或 RuntimeEvent/Status sink 注入。
 class BackendCoordinator : public QObject
 {
     Q_OBJECT
@@ -29,6 +31,7 @@ class BackendCoordinator : public QObject
     explicit BackendCoordinator(const BackendCoordinatorContext &context, QObject *parent = nullptr);
     explicit BackendCoordinator(QObject *owner);
 
+    void setPort(BackendCoordinatorPort *port);
     void setEventSink(std::function<void(RuntimeEvent)> sink);
     void setBackendStatusSink(std::function<void(BackendLifecycleState, bool, QString, QString, QString)> sink);
 
@@ -60,18 +63,20 @@ class BackendCoordinator : public QObject
     QString pickNextBackendFallback(const QString &failedBackend) const;
     bool triggerBackendFallback(const QString &failedBackend, const QString &reasonTag);
 
-  private:
-    QObject *ownerObject() const;
-    void publishBackendEvent(RuntimeEventType type,
-                             const QString &text,
-                             SIGNAL_STATE state = USUAL_SIGNAL,
-                             const QString &name = QString(),
-                             const QString &error = QString()) const;
     void publishBackendStatus(BackendLifecycleState lifecycle,
                               bool ready,
                               const QString &endpoint = QString(),
                               const QString &resolvedBackend = QString(),
                               const QString &error = QString()) const;
+
+  private:
+    QObject *ownerObject() const;
+    BackendCoordinatorPort *port() const;
+    void publishBackendEvent(RuntimeEventType type,
+                             const QString &text,
+                             SIGNAL_STATE state = USUAL_SIGNAL,
+                             const QString &name = QString(),
+                             const QString &error = QString()) const;
 
     BackendCoordinatorContext context_;
 };

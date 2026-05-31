@@ -346,7 +346,7 @@ void Widget::restoreSessionById(const QString &sessionId)
 
     flushPendingStream();
     ui->output->clear();
-    ui_messagesArray = QJsonArray();
+    setLegacySessionMessages(QJsonArray());
 
     // Helper to map role string to UI color and record role
     auto roleToRecord = [](const QString &r) -> RecordRole
@@ -511,8 +511,7 @@ void Widget::restoreSessionById(const QString &sessionId)
                 uiMsg.remove("reasoning_content");
             }
         }
-        ui_messagesArray.append(uiMsg);
-        const int msgIndex = ui_messagesArray.size() - 1;
+        const int msgIndex = appendRuntimeSessionMessage(uiMsg);
         recordEntries_[recIdx].msgIndex = msgIndex;
         if (thinkIdx >= 0) recordEntries_[thinkIdx].msgIndex = msgIndex;
 
@@ -808,9 +807,10 @@ void Widget::onRecordDoubleClicked(int index)
     }
 
     // Update in-memory message content and persist to history
-    if (e.msgIndex >= 0 && e.msgIndex < ui_messagesArray.size())
+    QJsonArray sessionMessages = legacySessionMessages();
+    if (e.msgIndex >= 0 && e.msgIndex < sessionMessages.size())
     {
-        QJsonObject m = ui_messagesArray[e.msgIndex].toObject();
+        QJsonObject m = sessionMessages[e.msgIndex].toObject();
         if (e.role == RecordRole::Think)
         {
             if (newText.isEmpty())
@@ -827,8 +827,8 @@ void Widget::onRecordDoubleClicked(int index)
         {
             m.insert("content", newText);
         }
-        ui_messagesArray[e.msgIndex] = m;
-        if (history_ && !history_->sessionId().isEmpty()) { history_->rewriteAllMessages(ui_messagesArray); }
+        replaceRuntimeSessionMessage(e.msgIndex, m);
+        if (history_ && !history_->sessionId().isEmpty()) { history_->rewriteAllMessages(legacySessionMessages()); }
     }
 }
 

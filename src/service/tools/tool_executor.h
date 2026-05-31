@@ -1,10 +1,11 @@
 #ifndef TOOL_EXECUTOR_H
 #define TOOL_EXECUTOR_H
 
+#include "runtime/runtime_tool_driver.h"
 #include "xtool.h"
 
 // 工具执行器：对 xTool 的封装，方便后续抽离工具注册与执行链路
-class ToolExecutor : public xTool
+class ToolExecutor : public xTool, public RuntimeToolDriver
 {
     Q_OBJECT
   public:
@@ -12,6 +13,9 @@ class ToolExecutor : public xTool
         : xTool(applicationDirPath)
     {
     }
+
+    bool executeToolCall(const QJsonObject &call, quint64 turnId, QString *errorMessage = nullptr) override;
+    void cancelActiveRuntimeTool() override;
 };
 
 #endif // TOOL_EXECUTOR_H

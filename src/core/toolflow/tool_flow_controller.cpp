@@ -224,7 +224,12 @@ void ToolFlowController::recvPushover()
                                 host->setToolFlowInvocationActive(true);
                                 host->emitToolFlowTurn(host->activeToolFlowTurnId());
                                 host->logToolFlow(FlowPhase::ToolStart, QStringLiteral("name=%1").arg(tools_name), SIGNAL_SIGNAL);
-                                host->emitToolFlowExec();
+                                const bool alreadyDispatchedByRuntime = runtimeDispatchedToolPending_;
+                                runtimeDispatchedToolPending_ = false;
+                                if (!alreadyDispatchedByRuntime)
+                                {
+                                    host->emitToolFlowExec();
+                                }
                                 // use tool; decoding remains paused
                             }
                         }
@@ -292,7 +297,7 @@ void ToolFlowController::recvPushover()
     host->scheduleToolFlowLazyUnload();
 }
 
-void ToolFlowController::recvToolCalls(const QString &payload)
+void ToolFlowController::recvToolCalls(const QString &payload, bool runtimeDispatched)
 {
     ToolFlowHostPort *host = hostPort();
     if (!host || host->toolCallModeForToolFlow() != TOOL_CALL_FUNCTION)
@@ -338,9 +343,11 @@ void ToolFlowController::recvToolCalls(const QString &payload)
     if (!calls.isEmpty())
     {
         host->setToolFlowPendingCalls(calls);
+        runtimeDispatchedToolPending_ = runtimeDispatched;
     }
     else
     {
+        runtimeDispatchedToolPending_ = false;
         qWarning() << "function_call tool_calls payload parse failed:" << err.errorString();
     }
 

@@ -164,23 +164,21 @@ int main(int argc, char *argv[])
     FlowTracer::log(FlowChannel::Lifecycle, QStringLiteral("construct: Expend %1 ms").arg(expendTimer.elapsed()));
     QElapsedTimer toolTimer;
     toolTimer.start();
-    ToolExecutor tool(applicationDirPath);      // 工具执行器
-    NetClient *netClient = new NetClient;  // ?????worker ????????
-    runtime.attachNetworkDriver(netClient, true);
+    ToolExecutor *tool = runtime.createToolExecutor(applicationDirPath);      // 工具执行器（运行层持有并放入 tool worker）
+    NetClient *netClient = runtime.createNetworkClient();                     // 网络客户端（运行层持有并放入 net worker）
     StartupLogger::log(QStringLiteral("xTool 构造完成（%1 ms）").arg(toolTimer.elapsed()));
     FlowTracer::log(FlowChannel::Lifecycle, QStringLiteral("construct: xTool %1 ms").arg(toolTimer.elapsed()));
-    // 将 xNet 改为堆对象，确保在其所属线程内析构，避免 Windows 下 QWinEventNotifier 跨线程清理告警
-    xMcp *mcp = new xMcp;  // MCP 管理实例（确保在线程内析构避免跨线程 QTimer 告警）
-    gpuChecker gpuer;     // 监测显卡信息
-    cpuChecker cpuer;     // 监视系统信息
+    xMcp *mcp = runtime.createMcpManager();       // MCP 管理实例（运行层持有并放入 mcp worker）
+    gpuChecker *gpuer = runtime.createGpuChecker(); // 监测显卡信息（运行层持有并放入 monitor worker）
+    cpuChecker *cpuer = runtime.createCpuChecker(); // 监视系统信息（运行层持有并放入 monitor worker）
 
     //-----------------初始值设定-----------------------
     // 传递语言（注意 net 改为指针）
     expend.wordsObj = w.wordsObj;
-    tool.wordsObj = w.wordsObj;
+    tool->wordsObj = w.wordsObj;
     expend.max_thread = w.max_thread;
-    tool.embedding_server_dim = expend.embedding_server_dim;               // 同步嵌入维度
-    tool.embedding_server_resultnumb = expend.embedding_resultnumb;          // 同步数目
+    tool->embedding_server_dim = expend.embedding_server_dim;               // 同步嵌入维度
+    tool->embedding_server_resultnumb = expend.embedding_resultnumb;          // 同步数目
     w.currentpath = w.historypath = expend.currentpath = applicationDirPath; // 默认打开路径
     w.whisper_model_path = QString::fromStdString(expend.whisper_params.model);
 
@@ -217,51 +215,18 @@ int main(int argc, char *argv[])
     qRegisterMetaType<DockerSandbox::Config>("DockerSandbox::Config");
     qRegisterMetaType<RequestSnapshot>("RequestSnapshot");
     //------------------开启多线程 ------------------------
-    QThread *gpuer_thread = new QThread;
-    gpuer.moveToThread(gpuer_thread);
-    gpuer_thread->start();
-    QThread *cpuer_thread = new QThread;
-    cpuer.moveToThread(cpuer_thread);
-    cpuer_thread->start();
-    QThread *tool_thread = new QThread;
-    tool.moveToThread(tool_thread);
-    tool_thread->start();
     // Ensure knowledge-base embedding server is stopped when the app quits,
     // even if the Expend window was closed earlier
     QObject::connect(&a, &QCoreApplication::aboutToQuit, &expend, [&expend]()
                      { expend.stopEmbeddingServer(true); }, Qt::QueuedConnection);
-    QThread *mcp_thread = new QThread;
-    mcp->moveToThread(mcp_thread);
-    QObject::connect(mcp_thread, &QThread::finished, mcp, &QObject::deleteLater);
-    mcp_thread->start();
-
-    // 统一的应用退出收尾：优雅停止各工作线程，避免退出阶段跨线程清理产生告警/卡顿
-    QObject::connect(&a, &QCoreApplication::aboutToQuit, [gpuer_thread]()
-                     {
-        gpuer_thread->quit();
-        gpuer_thread->wait(1000); });
-    QObject::connect(&a, &QCoreApplication::aboutToQuit, [cpuer_thread]()
-                     {
-        cpuer_thread->quit();
-        cpuer_thread->wait(1000); });
-    QObject::connect(&a, &QCoreApplication::aboutToQuit, [&tool, tool_thread]()
-                     {
-        QMetaObject::invokeMethod(&tool, "shutdownDockerSandbox", Qt::BlockingQueuedConnection);
-        tool_thread->quit();
-        tool_thread->wait(2000); });
-    QObject::connect(&a, &QCoreApplication::aboutToQuit, [mcp, mcp_thread]()
-                     {
-        QMetaObject::invokeMethod(mcp, "disconnectAll", Qt::QueuedConnection);
-        QMetaObject::invokeMethod(mcp, "deleteLater", Qt::QueuedConnection);
-        mcp_thread->quit();
-        mcp_thread->wait(2000); });
+    // 统一的应用退出收尾由 EvaRuntime::shutdown() 停止运行层 worker 线程。
     //------------------监测gpu信息-------------------
-    QObject::connect(&gpuer, &gpuChecker::gpu_status, &w, &Widget::recv_gpu_status); // 传递gpu信息
-    QObject::connect(&w, &Widget::gpu_reflash, &gpuer, &gpuChecker::checkGpu);       // 强制刷新gpu信息
+    QObject::connect(gpuer, &gpuChecker::gpu_status, &w, &Widget::recv_gpu_status); // 传递gpu信息
+    QObject::connect(&w, &Widget::gpu_reflash, gpuer, &gpuChecker::checkGpu);        // 强制刷新gpu信息
 
     //------------------监测系统信息-------------------
-    QObject::connect(&cpuer, &cpuChecker::cpu_status, &w, &Widget::recv_cpu_status); // 传递cpu信息
-    QObject::connect(&w, &Widget::cpu_reflash, &cpuer, &cpuChecker::chekCpu);        // 强制刷新cpu信息
+    QObject::connect(cpuer, &cpuChecker::cpu_status, &w, &Widget::recv_cpu_status); // 传递cpu信息
+    QObject::connect(&w, &Widget::cpu_reflash, cpuer, &cpuChecker::chekCpu);         // 强制刷新cpu信息
 
     //------------------连接窗口和增殖窗口-------------------
     QObject::connect(&w, &Widget::ui2expend_language, &expend, &Expend::recv_language);         // 传递使用的语言
@@ -286,12 +251,12 @@ int main(int argc, char *argv[])
     // Forward streaming output to Expend for TTS segmentation/playback
     QObject::connect(netClient, &NetClient::net2ui_output, &expend, &Expend::recv_output, Qt::QueuedConnection);                // 文转声：接收模型流式输出
     QObject::connect(netClient, &NetClient::net2ui_pushover, &expend, &Expend::onNetTurnDone, Qt::QueuedConnection);            // 文转声：回合结束时刷新未完句
-    // 发送/停止入口先进入 EvaRuntime，再由运行层转发到网络驱动。
+    // 发送/停止入口先进入 EvaRuntime，再由运行层在内部构造 RequestSnapshot 并转发到网络驱动。
     // Widget 仍接收 NetClient 的旧信号，保证本阶段 UI 渲染行为不变。
-    QObject::connect(&w, &Widget::ui2net_send, &runtime, [&runtime](const RequestSnapshot &snapshot)
+    QObject::connect(&w, &Widget::ui2runtime_send, &runtime, [&runtime](const RuntimeSendMessageCommand &command)
                      {
                          QString error;
-                         if (!runtime.sendRequestSnapshot(snapshot, &error))
+                         if (!runtime.sendMessage(command, &error))
                          {
                              qWarning().noquote() << QStringLiteral("EvaRuntime send failed:") << error;
                          }
@@ -299,38 +264,38 @@ int main(int argc, char *argv[])
     QObject::connect(&w, &Widget::ui2net_stop, &runtime, &EvaRuntime::setStopRequested, Qt::QueuedConnection);
 
     //------------------连接tool和窗口-------------------
-    QObject::connect(&tool, &xTool::tool2ui_state, &w, &Widget::reflash_state);        // 窗口状态区更新
-    QObject::connect(&tool, &xTool::tool2ui_pushover, &w, &Widget::recv_toolpushover); // 完成推理
-    QObject::connect(&tool, &xTool::tool2ui_pushover, &expend, &Expend::recv_toolpushover, Qt::QueuedConnection); // 文转声：工具返回时仅播报“模型调用xxx工具”
-    QObject::connect(&tool, &xTool::tool2ui_controller_hint, &w, &Widget::recv_controller_hint, Qt::QueuedConnection); // 桌面控制器：屏幕叠加提示
-    QObject::connect(&tool, &xTool::tool2ui_controller_hint_done, &w, &Widget::recv_controller_hint_done, Qt::QueuedConnection); // 桌面控制器：动作完成提示（绿色）
-    QObject::connect(&tool, &xTool::tool2ui_controller_overlay, &w, &Widget::recv_controller_overlay, Qt::QueuedConnection); // 桌面控制器：落盘带 bbox 的截图标注
-    QObject::connect(&tool, &xTool::tool2ui_monitor_countdown, &w, &Widget::recv_monitor_countdown, Qt::QueuedConnection); // 桌面监视器：等待中倒计时提示
-    QObject::connect(&tool, &xTool::tool2ui_monitor_countdown_done, &w, &Widget::recv_monitor_countdown_done, Qt::QueuedConnection); // 桌面监视器：隐藏等待提示
-    QObject::connect(&tool, &xTool::tool2ui_terminalCommandStarted, &w, &Widget::toolCommandStarted);
-    QObject::connect(&tool, &xTool::tool2ui_terminalStdout, &w, &Widget::toolCommandStdout);
-    QObject::connect(&tool, &xTool::tool2ui_terminalStderr, &w, &Widget::toolCommandStderr);
-    QObject::connect(&tool, &xTool::tool2ui_terminalCommandFinished, &w, &Widget::toolCommandFinished);
-    QObject::connect(&w, &Widget::ui2tool_language, &tool, &xTool::recv_language); // 传递使用的语言
-    QObject::connect(&w, &Widget::ui2tool_exec, &tool, &xTool::Exec);              // 开始推理
-    QObject::connect(&w, &Widget::ui2tool_workdir, &tool, &xTool::recv_workdir);   // 设置工程师工作目录
-    QObject::connect(&w, &Widget::ui2tool_controllerNormalize, &tool, &xTool::recv_controllerNormalize); // 桌面控制器归一化坐标系
-    QObject::connect(&w, &Widget::ui2tool_turn, &tool, &xTool::recv_turn);         // 同步当前回合ID
-    QObject::connect(&w, &Widget::ui2tool_dockerConfigChanged, &tool, &xTool::recv_dockerConfig);
-    QObject::connect(&w, &Widget::ui2tool_fixDockerContainerMount, &tool, &xTool::fixDockerContainerMount);
-    QObject::connect(&w, &Widget::ui2tool_interruptCommand, &tool, &xTool::cancelExecuteCommand);
-    QObject::connect(&w, &Widget::ui2tool_cancelActive, &tool, &xTool::cancelActiveTool);
-    QObject::connect(&w, &Widget::ui2tool_shutdownDocker, &tool, &xTool::shutdownDockerSandbox, Qt::QueuedConnection);
-    QObject::connect(&tool, &xTool::dockerShutdownCompleted, &w, &Widget::onDockerShutdownCompleted, Qt::QueuedConnection);
-    QObject::connect(&tool, &xTool::tool2ui_dockerStatusChanged, &w, &Widget::recv_docker_status);
+    QObject::connect(tool, &xTool::tool2ui_state, &w, &Widget::reflash_state);        // 窗口状态区更新
+    QObject::connect(tool, &xTool::tool2ui_pushover, &w, &Widget::recv_toolpushover); // 完成推理
+    QObject::connect(tool, &xTool::tool2ui_pushover, &expend, &Expend::recv_toolpushover, Qt::QueuedConnection); // 文转声：工具返回时仅播报“模型调用xxx工具”
+    QObject::connect(tool, &xTool::tool2ui_controller_hint, &w, &Widget::recv_controller_hint, Qt::QueuedConnection); // 桌面控制器：屏幕叠加提示
+    QObject::connect(tool, &xTool::tool2ui_controller_hint_done, &w, &Widget::recv_controller_hint_done, Qt::QueuedConnection); // 桌面控制器：动作完成提示（绿色）
+    QObject::connect(tool, &xTool::tool2ui_controller_overlay, &w, &Widget::recv_controller_overlay, Qt::QueuedConnection); // 桌面控制器：落盘带 bbox 的截图标注
+    QObject::connect(tool, &xTool::tool2ui_monitor_countdown, &w, &Widget::recv_monitor_countdown, Qt::QueuedConnection); // 桌面监视器：等待中倒计时提示
+    QObject::connect(tool, &xTool::tool2ui_monitor_countdown_done, &w, &Widget::recv_monitor_countdown_done, Qt::QueuedConnection); // 桌面监视器：隐藏等待提示
+    QObject::connect(tool, &xTool::tool2ui_terminalCommandStarted, &w, &Widget::toolCommandStarted);
+    QObject::connect(tool, &xTool::tool2ui_terminalStdout, &w, &Widget::toolCommandStdout);
+    QObject::connect(tool, &xTool::tool2ui_terminalStderr, &w, &Widget::toolCommandStderr);
+    QObject::connect(tool, &xTool::tool2ui_terminalCommandFinished, &w, &Widget::toolCommandFinished);
+    QObject::connect(&w, &Widget::ui2tool_language, tool, &xTool::recv_language); // 传递使用的语言
+    QObject::connect(&w, &Widget::ui2tool_exec, tool, &xTool::Exec);              // 开始推理
+    QObject::connect(&w, &Widget::ui2tool_workdir, tool, &xTool::recv_workdir);   // 设置工程师工作目录
+    QObject::connect(&w, &Widget::ui2tool_controllerNormalize, tool, &xTool::recv_controllerNormalize); // 桌面控制器归一化坐标系
+    QObject::connect(&w, &Widget::ui2tool_turn, tool, &xTool::recv_turn);         // 同步当前回合ID
+    QObject::connect(&w, &Widget::ui2tool_dockerConfigChanged, tool, &xTool::recv_dockerConfig);
+    QObject::connect(&w, &Widget::ui2tool_fixDockerContainerMount, tool, &xTool::fixDockerContainerMount);
+    QObject::connect(&w, &Widget::ui2tool_interruptCommand, tool, &xTool::cancelExecuteCommand);
+    QObject::connect(&w, &Widget::ui2tool_cancelActive, tool, &xTool::cancelActiveTool);
+    QObject::connect(&w, &Widget::ui2tool_shutdownDocker, tool, &xTool::shutdownDockerSandbox, Qt::QueuedConnection);
+    QObject::connect(tool, &xTool::dockerShutdownCompleted, &w, &Widget::onDockerShutdownCompleted, Qt::QueuedConnection);
+    QObject::connect(tool, &xTool::tool2ui_dockerStatusChanged, &w, &Widget::recv_docker_status);
 
     //------------------连接增殖窗口和tool-------------------
-    QObject::connect(&expend, &Expend::expend2tool_embeddingdb, &tool, &xTool::recv_embeddingdb);                 // 传递已嵌入文本段数据
-    QObject::connect(&expend, &Expend::expend2tool_embedding_dim, &tool, &xTool::recv_embedding_dim);             // 同步嵌入维度
-    QObject::connect(&expend, &Expend::expend2ui_embedding_resultnumb, &tool, &xTool::recv_embedding_resultnumb); // 传递嵌入结果返回个数
+    QObject::connect(&expend, &Expend::expend2tool_embeddingdb, tool, &xTool::recv_embeddingdb);                 // 传递已嵌入文本段数据
+    QObject::connect(&expend, &Expend::expend2tool_embedding_dim, tool, &xTool::recv_embedding_dim);             // 同步嵌入维度
+    QObject::connect(&expend, &Expend::expend2ui_embedding_resultnumb, tool, &xTool::recv_embedding_resultnumb); // 传递嵌入结果返回个数
 
-    QObject::connect(&tool, &xTool::tool2expend_draw, &expend, &Expend::recv_draw);         // 开始绘制图像
-    QObject::connect(&expend, &Expend::expend2tool_drawover, &tool, &xTool::recv_drawover); // 图像绘制完成
+    QObject::connect(tool, &xTool::tool2expend_draw, &expend, &Expend::recv_draw);         // 开始绘制图像
+    QObject::connect(&expend, &Expend::expend2tool_drawover, tool, &xTool::recv_drawover); // 图像绘制完成
 
     // 将持久化向量库的内容同步给工具层（若已存在）
     if (!expend.Embedding_DB.isEmpty())
@@ -347,10 +312,10 @@ int main(int argc, char *argv[])
     QObject::connect(mcp, &xMcp::toolsRefreshed, &expend, &Expend::recv_mcp_tools_refreshed);
     QObject::connect(mcp, &xMcp::addService_single_over, &expend, &Expend::recv_addService_single_over); // 添加某个mcp服务完成
     QObject::connect(mcp, &xMcp::addService_over, &expend, &Expend::recv_addService_over);
-    QObject::connect(&tool, &xTool::tool2mcp_toollist, mcp, &xMcp::callList);       // 查询mcp可用工具
-    QObject::connect(mcp, &xMcp::callList_over, &tool, &xTool::recv_calllist_over); // 查询mcp可用工具完成
-    QObject::connect(&tool, &xTool::tool2mcp_toolcall, mcp, &xMcp::callTool);       // 开始调用mcp可用工具
-    QObject::connect(mcp, &xMcp::callTool_over, &tool, &xTool::recv_callTool_over); // mcp可用工具调用完成
+    QObject::connect(tool, &xTool::tool2mcp_toollist, mcp, &xMcp::callList);       // 查询mcp可用工具
+    QObject::connect(mcp, &xMcp::callList_over, tool, &xTool::recv_calllist_over); // 查询mcp可用工具完成
+    QObject::connect(tool, &xTool::tool2mcp_toolcall, mcp, &xMcp::callTool);       // 开始调用mcp可用工具
+    QObject::connect(mcp, &xMcp::callTool_over, tool, &xTool::recv_callTool_over); // mcp可用工具调用完成
 
     //---------------读取配置文件并执行------------------
     QFile configfile(applicationDirPath + "/EVA_TEMP/eva_config.ini");
@@ -362,8 +327,8 @@ int main(int argc, char *argv[])
         settings.setIniCodec("utf-8");
         ConfigMigrator::migrate(settings);
         w.loadGlobalUiSettings(settings);
-        w.shell = tool.shell = expend.shell = settings.value("shell", DEFAULT_SHELL).toString();                                    // 读取记录在配置文件中的shell路径
-        w.pythonExecutable = tool.pythonExecutable = expend.pythonExecutable = settings.value("python", DEFAULT_PYTHON).toString(); // 读取记录在配置文件中的python版本
+        w.shell = tool->shell = expend.shell = settings.value("shell", DEFAULT_SHELL).toString();                                    // 读取记录在配置文件中的shell路径
+        w.pythonExecutable = tool->pythonExecutable = expend.pythonExecutable = settings.value("python", DEFAULT_PYTHON).toString(); // 读取记录在配置文件中的python版本
         QString modelpath = settings.value("modelpath", applicationDirPath + DEFAULT_LLM_MODEL_PATH).toString();                    // 模型路径
         w.currentpath = w.historypath = expend.currentpath = modelpath;                                                             // 默认打开路径
         w.ui_SETTINGS.modelpath = modelpath;

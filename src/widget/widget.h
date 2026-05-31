@@ -64,6 +64,7 @@
 #include <functional>
 #include <thread>
 #include <optional>
+#include <memory>
 #ifdef _WIN32
 #include <windows.h>
 #elif __linux__
@@ -109,6 +110,7 @@ class ControllerOverlay;
 class SessionController;
 class ToolFlowController;
 class BackendCoordinator;
+class WidgetBackendCoordinatorPort;
 class EvaRuntime;
 
 enum class DockerTargetMode
@@ -138,7 +140,7 @@ class Widget : public QWidget, public SessionHostPort, public ToolFlowHostPort
     Q_OBJECT
     friend class SessionController;
     friend class ToolFlowController;
-    friend class BackendCoordinator;
+    friend class WidgetBackendCoordinatorPort;
 
   public:
     static constexpr int kMinFontPt = 8;
@@ -151,7 +153,8 @@ class Widget : public QWidget, public SessionHostPort, public ToolFlowHostPort
     void syncRuntimeSessionMirror(bool replaceMessages = true,
                                   bool projectActivity = false,
                                   bool projectIdentity = false,
-                                  bool projectConfig = false);
+                                  bool projectConfig = false,
+                                  bool projectCounters = false);
     quint64 runtimeActiveTurnIdForUi() const;
     bool runtimeTurnActiveForUi() const;
     bool runtimeToolActiveForUi() const;
@@ -840,10 +843,10 @@ class Widget : public QWidget, public SessionHostPort, public ToolFlowHostPort
     static constexpr int kStreamFlushIntervalMs = 16;
     static constexpr int kStreamMaxBufferChars = 2048;
 
-    // 发给net的信号
+    // 发给 runtime/net 的信号
   signals:
-    void ui2net_send(RequestSnapshot snapshot); // 快照式发送
-    void ui2net_stop(bool stop);              // 传递停止信号
+    void ui2runtime_send(RuntimeSendMessageCommand command); // 结构化发送命令
+    void ui2net_stop(bool stop);                            // 传递停止信号
 
     // 发送给tool的信号
     void ui2tool_language(int language_flag_); // 传递使用的语言
@@ -1269,6 +1272,7 @@ class Widget : public QWidget, public SessionHostPort, public ToolFlowHostPort
     // 控制器：从 Widget 中剥离会话与工具流逻辑
     SessionController *sessionController_ = nullptr;
     ToolFlowController *toolFlowController_ = nullptr;
+    std::unique_ptr<WidgetBackendCoordinatorPort> backendCoordinatorPort_;
     BackendCoordinator *backendCoordinator_ = nullptr;
     EvaRuntime *runtime_ = nullptr; // 不拥有；运行层生命周期由启动入口或服务入口管理
   };

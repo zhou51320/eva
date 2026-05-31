@@ -3,6 +3,7 @@
 #include "ui_widget.h"
 #include "runtime/eva_runtime.h"
 #include "service/backend/backend_coordinator.h"
+#include "core/toolflow/tool_flow_controller.h"
 
 #include <QColor>
 #include <QJsonObject>
@@ -66,18 +67,29 @@ void Widget::setRuntime(EvaRuntime *runtime)
 void Widget::syncRuntimeSessionMirror(bool replaceMessages,
                                       bool projectActivity,
                                       bool projectIdentity,
-                                      bool projectConfig)
+                                      bool projectConfig,
+                                      bool projectCounters)
 {
     if (!runtime_) return;
     const RuntimeState currentState = runtime_->stateSnapshot();
+    const QJsonArray sessionMessages = legacySessionMessages();
     if (replaceMessages)
     {
-        runtime_->setSessionMessages(ui_messagesArray);
+        runtime_->setSessionMessages(sessionMessages);
     }
 
+    const bool useRuntimeCounters = currentState.initialized && !projectCounters;
     const int cap = qMax(0, resolvedContextLimitForUi());
-    int percent = 0;
-    if (cap > 0)
+    const int mirroredSlotId = useRuntimeCounters ? currentState.slotId : currentSlotId_;
+    const int mirroredKvUsed = useRuntimeCounters ? currentState.kvUsed : kvUsed_;
+    const int mirroredKvUsedBeforeTurn = useRuntimeCounters ? currentState.kvUsedBeforeTurn : kvUsedBeforeTurn_;
+    const int mirroredKvStreamedTurn = useRuntimeCounters ? currentState.kvStreamedTurn : kvStreamedTurn_;
+    const int mirroredKvTurnTokens = useRuntimeCounters ? currentState.kvTurnTokens : kvTokensTurn_;
+    const int mirroredPromptTokens = useRuntimeCounters ? currentState.promptTokens : kvPromptTokensTurn_;
+    const int mirroredGeneratedTokens = useRuntimeCounters ? currentState.generatedTokens : kvStreamedTurn_;
+    const int mirroredReasoningTokens = useRuntimeCounters ? currentState.reasoningTokens : lastReasoningTokens_;
+    int percent = useRuntimeCounters ? currentState.kvPercent : 0;
+    if (!useRuntimeCounters && cap > 0)
     {
         percent = qBound(0, int(qRound(100.0 * double(qMax(0, kvUsed_)) / double(cap))), 100);
     }
@@ -109,12 +121,12 @@ void Widget::syncRuntimeSessionMirror(bool replaceMessages,
         mirroredToolCallMode = currentState.toolCallMode;
         mirroredCompactionSettings = currentState.compactionSettings;
     }
-    bool mirroredTurnActive = turnActive_;
-    bool mirroredToolActive = toolInvocationActive_;
-    quint64 mirroredTurnId = activeTurnId_;
+    bool mirroredTurnActive = runtime_ ? currentState.turnActive : turnActive_;
+    bool mirroredToolActive = runtime_ ? currentState.toolActive : toolInvocationActive_;
+    quint64 mirroredTurnId = runtime_ ? currentState.activeTurnId : activeTurnId_;
     QString mirroredTask = taskNameForRuntime(currentTask_);
-    bool mirroredCompactionActive = compactionInFlight_;
-    bool mirroredCompactionQueued = compactionQueued_;
+    bool mirroredCompactionActive = compactionInFlight();
+    bool mirroredCompactionQueued = compactionQueued();
     if (!projectActivity && currentState.initialized)
     {
         mirroredTurnActive = currentState.turnActive;
@@ -125,7 +137,7 @@ void Widget::syncRuntimeSessionMirror(bool replaceMessages,
         mirroredCompactionActive = currentState.compactionActive;
         mirroredCompactionQueued = currentState.compactionQueued;
     }
-    runtime_->updateSessionRuntimeState(ui_messagesArray,
+    runtime_->updateSessionRuntimeState(sessionMessages,
                                         history_ ? history_->sessionId() : QString(),
                                         mirroredConversation,
                                         mirroredSystemPrompt,
@@ -143,19 +155,23 @@ void Widget::syncRuntimeSessionMirror(bool replaceMessages,
                                         mirroredCompactionSettings,
                                         mirroredCompactionActive,
                                         mirroredCompactionQueued,
+                                        compactionFromIndex_,
+                                        compactionToIndex_,
+                                        compactionPendingHasInput_,
+                                        compactionReason_,
                                         mirroredTurnActive,
                                         mirroredToolActive,
                                         mirroredTurnId,
-                                        currentSlotId_,
-                                        kvUsed_,
-                                        kvUsedBeforeTurn_,
-                                        kvStreamedTurn_,
-                                        kvTokensTurn_,
+                                        mirroredSlotId,
+                                        mirroredKvUsed,
+                                        mirroredKvUsedBeforeTurn,
+                                        mirroredKvStreamedTurn,
+                                        mirroredKvTurnTokens,
                                         cap,
                                         percent,
-                                        kvPromptTokensTurn_,
-                                        kvStreamedTurn_,
-                                        lastReasoningTokens_);
+                                        mirroredPromptTokens,
+                                        mirroredGeneratedTokens,
+                                        mirroredReasoningTokens);
 }
 
 quint64 Widget::runtimeActiveTurnIdForUi() const
@@ -187,7 +203,7 @@ bool Widget::runtimeBusyForUi() const
                state.phase == RuntimePhase::Running ||
                state.phase == RuntimePhase::ToolRunning;
     }
-    return is_run || turnActive_ || toolInvocationActive_;
+    return is_run || runtimeTurnActiveForUi() || runtimeToolActiveForUi();
 }
 
 RuntimeMode Widget::runtimeModeForUi() const
@@ -272,7 +288,7 @@ void Widget::projectRuntimeIdleState(bool clearTurnId)
 {
     turnActive_ = false;
     is_run = false;
-    if (clearTurnId)
+    if (clearTurnId && !runtime_)
         activeTurnId_ = 0;
     ui_state_normal();
     syncRuntimeSessionMirror(false, true);
@@ -283,7 +299,7 @@ void Widget::projectRuntimeErrorIdleState(const QString &error, bool clearTurnId
     turnActive_ = false;
     toolInvocationActive_ = false;
     is_run = false;
-    if (clearTurnId)
+    if (clearTurnId && !runtime_)
         activeTurnId_ = 0;
 
     syncRuntimeSessionMirror(false, true);
@@ -295,7 +311,7 @@ void Widget::projectRuntimeErrorIdleState(const QString &error, bool clearTurnId
 
 void Widget::projectRuntimeTurnObserved()
 {
-    if (!turnActive_)
+    if (!runtimeTurnActiveForUi())
         turnActive_ = true;
     syncRuntimeSessionMirror(false, true);
 }
@@ -526,12 +542,20 @@ void Widget::syncSessionRuntimeState(bool replaceMessages)
 
 QJsonArray Widget::legacySessionMessages() const
 {
+    if (runtimeSessionReady())
+    {
+        const QJsonArray runtimeMessages = runtime_->stateSnapshot().messages;
+        if (!runtimeMessages.isEmpty() || ui_messagesArray.isEmpty())
+            return runtimeMessages;
+    }
     return ui_messagesArray;
 }
 
 void Widget::setLegacySessionMessages(const QJsonArray &messages)
 {
     ui_messagesArray = messages;
+    if (runtimeSessionReady())
+        runtime_->setSessionMessages(messages);
 }
 
 int Widget::appendRuntimeSessionMessage(const QJsonObject &message)
@@ -727,32 +751,37 @@ void Widget::sendEndpointData(const ENDPOINT_DATA &data)
 
 quint64 Widget::startSessionTurn(const QString &taskName, bool isToolLoop, bool continuingTool)
 {
+    quint64 turnId = 0;
     if (runtime_)
     {
-        activeTurnId_ = runtime_->beginTurn(taskName, isToolLoop);
-        turnActive_ = true;
+        turnId = runtime_->beginTurn(taskName, isToolLoop);
     }
     else if (activeTurnId_ == 0 || !turnActive_)
     {
         activeTurnId_ = nextTurnId_++;
         turnActive_ = true;
+        turnId = activeTurnId_;
+    }
+    else
+    {
+        turnId = activeTurnId_;
     }
     toolInvocationActive_ = false;
     const QString detail = QStringLiteral("task=%1 mode=%2 tool_cont=%3").arg(taskName, sessionModeName(), continuingTool ? QStringLiteral("yes") : QStringLiteral("no"));
     logFlow(FlowPhase::Start, detail, SIGNAL_SIGNAL);
-    emit ui2tool_turn(activeTurnId_);
+    emit ui2tool_turn(turnId);
     syncRuntimeSessionMirror(true, true);
-    return activeTurnId_;
+    return turnId;
 }
 
 void Widget::finishSessionTurn(const QString &reason, bool success)
 {
     const quint64 runtimeTurnId = runtimeActiveTurnIdForUi();
-    if (activeTurnId_ == 0 && runtimeTurnId == 0 && !runtimeTurnActiveForUi())
+    if (!runtime_ && activeTurnId_ == 0 && runtimeTurnId == 0 && !runtimeTurnActiveForUi())
         return;
-    if (activeTurnId_ == 0)
+    if (!runtime_ && activeTurnId_ == 0)
         activeTurnId_ = runtimeTurnId;
-    const QString detail = QStringLiteral("%1 kvUsed=%2").arg(reason).arg(kvUsed_);
+    const QString detail = QStringLiteral("%1 kvUsed=%2").arg(reason).arg(runtimeKvUsedForUi());
     logFlow(FlowPhase::Finish, detail, success ? SIGNAL_SIGNAL : WRONG_SIGNAL);
     if (runtime_)
         runtime_->finishTurn(reason, success);
@@ -841,12 +870,14 @@ void Widget::finishCompactionRequest()
 
 int Widget::compactionFromIndex() const
 {
-    return compactionFromIndex_;
+    const RuntimeState state = runtimeStateSnapshotForSession();
+    return state.initialized ? state.compactionFromIndex : compactionFromIndex_;
 }
 
 int Widget::compactionToIndex() const
 {
-    return compactionToIndex_;
+    const RuntimeState state = runtimeStateSnapshotForSession();
+    return state.initialized ? state.compactionToIndex : compactionToIndex_;
 }
 
 void Widget::clearCompactionRange()
@@ -859,7 +890,8 @@ void Widget::clearCompactionRange()
 
 bool Widget::hasPendingCompactionInput() const
 {
-    return compactionPendingHasInput_;
+    const RuntimeState state = runtimeStateSnapshotForSession();
+    return state.initialized ? state.compactionPendingInput : compactionPendingHasInput_;
 }
 
 InputPack Widget::takePendingCompactionInput()
@@ -1193,7 +1225,11 @@ void Widget::setToolFlowInvocationActive(bool active)
     toolInvocationActive_ = active;
     if (runtime_ && active && !runtimeToolActiveForUi())
     {
-        activeTurnId_ = runtime_->beginTurn(QStringLiteral("tool-loop"), true);
+        runtime_->beginTurn(QStringLiteral("tool-loop"), true);
+    }
+    else if (!active && runtime_)
+    {
+        activeTurnId_ = runtimeActiveTurnIdForUi();
     }
     syncRuntimeSessionMirror(true, true);
 }
@@ -1215,9 +1251,10 @@ void Widget::emitToolFlowExec()
 
 QString Widget::lastAssistantMessageTextForToolFlow() const
 {
-    if (ui_messagesArray.isEmpty())
+    const QJsonArray sessionMessages = legacySessionMessages();
+    if (sessionMessages.isEmpty())
         return QString();
-    return ui_messagesArray.last().toObject().value(QStringLiteral("content")).toString();
+    return sessionMessages.last().toObject().value(QStringLiteral("content")).toString();
 }
 
 mcp::json Widget::parseTextToolCallForToolFlow(const QString &text)
@@ -1339,7 +1376,8 @@ void Widget::handleRuntimeEvent(const RuntimeEvent &event)
     case RuntimeEventType::ToolStarted:
         if (event.name == QStringLiteral("tool_calls_detected"))
         {
-            recv_tool_calls(event.text);
+            const bool runtimeDispatched = event.payload.value(QStringLiteral("runtime_tool_dispatched")).toBool(false);
+            toolFlowController_->recvToolCalls(event.text, runtimeDispatched);
         }
         else if (!event.name.isEmpty() &&
                  event.name != QStringLiteral("answer") &&
