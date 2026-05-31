@@ -91,6 +91,7 @@
 #include "../net/controlchannel.h"
 #include "../service/net/request_snapshot.h"
 #include "../runtime/runtime_events.h"
+#include "../runtime/runtime_commands.h"
 #include "../service/backend/xbackend.h" // local llama.cpp server manager
 #include "../xconfig.h"  // ui和bot都要导入的共有配置
 #include "thirdparty/QHotkey/QHotkey/qhotkey.h"
