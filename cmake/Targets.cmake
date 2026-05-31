@@ -195,6 +195,14 @@ add_executable(
     src/service/backend/xbackend.h
     src/service/backend/xbackend_args.cpp
     src/service/backend/xbackend_args.h
+    src/service/tools/tool_executor.cpp
+    src/service/tools/tool_executor.h
+    src/xtool.cpp
+    src/xtool.h
+    src/xmcp.cpp
+    src/xmcp.h
+    src/utils/cpuchecker.h
+    src/utils/gpuchecker.h
     src/net/controlchannel.cpp
     src/net/controlchannel.h
     src/utils/devicemanager.cpp
