@@ -3,6 +3,7 @@
 #include <QDateTime>
 #include <QDir>
 #include <QDirIterator>
+#include <QElapsedTimer>
 #include <QEventLoop>
 #include <QFileInfo>
 #include <QJsonArray>
@@ -47,6 +48,119 @@ QString readStringSetting(QSettings &settings, const QString &key, const QString
 bool toolEnabledFromSettings(QSettings &settings, const QStringList &enabledTools, const QString &id, const QString &legacyKey)
 {
     return enabledTools.contains(id) || settings.value(legacyKey, false).toBool();
+}
+
+int jsonIntValue(const QJsonObject &object, const QString &key, int fallback = -1)
+{
+    const QJsonValue value = object.value(key);
+    if (value.isDouble()) return value.toInt(fallback);
+    if (value.isString())
+    {
+        bool ok = false;
+        const int parsed = value.toString().toInt(&ok);
+        if (ok) return parsed;
+    }
+    return fallback;
+}
+
+double jsonDoubleValue(const QJsonObject &object, const QString &key, double fallback = -1.0)
+{
+    const QJsonValue value = object.value(key);
+    if (value.isDouble()) return value.toDouble(fallback);
+    if (value.isString())
+    {
+        bool ok = false;
+        const double parsed = value.toString().toDouble(&ok);
+        if (ok) return parsed;
+    }
+    return fallback;
+}
+
+int approximateVisibleTokens(const QString &text)
+{
+    // Web 端优先展示后端 usage/timings；缺失时用可见文本做保底估算，
+    // 避免完成/错误状态下统计区域完全空白。中文按字符近似，英文按词段近似。
+    int cjkChars = 0;
+    int latinRuns = 0;
+    bool inLatinRun = false;
+    for (const QChar ch : text)
+    {
+        if (ch.unicode() >= 0x4E00 && ch.unicode() <= 0x9FFF)
+        {
+            ++cjkChars;
+            inLatinRun = false;
+        }
+        else if (ch.isLetterOrNumber())
+        {
+            if (!inLatinRun)
+            {
+                ++latinRuns;
+                inLatinRun = true;
+            }
+        }
+        else
+        {
+            inLatinRun = false;
+        }
+    }
+    return qMax(0, cjkChars + latinRuns);
+}
+
+QJsonObject runtimeStatsFromStatePayload(const QJsonObject &state)
+{
+    // 桥接模式的统计可能在顶层 runtime_state，也可能嵌在 snapshot.runtime_state。
+    // 统一抽取后，WebUI 不需要理解主程序和 direct runtime 的状态差异。
+    if (state.value(QStringLiteral("runtime_state")).isObject())
+        return state.value(QStringLiteral("runtime_state")).toObject();
+    const QJsonObject snapshot = state.value(QStringLiteral("snapshot")).toObject();
+    if (snapshot.value(QStringLiteral("runtime_state")).isObject())
+        return snapshot.value(QStringLiteral("runtime_state")).toObject();
+    return state;
+}
+
+QJsonObject chatStatsPayload(const QJsonObject &stateOrRuntime,
+                             const QJsonObject &latestMetrics,
+                             const QString &fallbackText,
+                             qint64 elapsedMs)
+{
+    // 统计口径：tokens 展示本轮生成 token，total_tokens 保留 prompt+生成总量。
+    // 速度优先使用 net 层 timings，缺失时按本轮墙钟耗时估算。
+    const QJsonObject runtimeState = runtimeStatsFromStatePayload(stateOrRuntime);
+    int promptTokens = jsonIntValue(latestMetrics, QStringLiteral("prompt_tokens"),
+                                    jsonIntValue(runtimeState, QStringLiteral("prompt_tokens"), -1));
+    int completionTokens = jsonIntValue(latestMetrics, QStringLiteral("predicted_tokens"),
+                                        jsonIntValue(runtimeState, QStringLiteral("generated_tokens"),
+                                                     jsonIntValue(runtimeState, QStringLiteral("kv_streamed_turn"), -1)));
+    if (completionTokens < 0 && !fallbackText.isEmpty())
+        completionTokens = approximateVisibleTokens(fallbackText);
+
+    int totalTokens = jsonIntValue(latestMetrics, QStringLiteral("total_tokens"), -1);
+    if (totalTokens < 0)
+    {
+        const int stateTurn = jsonIntValue(runtimeState, QStringLiteral("kv_turn_tokens"), -1);
+        if (stateTurn >= 0) totalTokens = stateTurn;
+        else if (promptTokens >= 0 && completionTokens >= 0) totalTokens = promptTokens + completionTokens;
+    }
+
+    double tokensPerSecond = jsonDoubleValue(latestMetrics, QStringLiteral("predicted_per_second"), -1.0);
+    if (tokensPerSecond <= 0.0 && elapsedMs > 0 && completionTokens > 0)
+        tokensPerSecond = 1000.0 * double(completionTokens) / double(elapsedMs);
+
+    QJsonObject stats;
+    if (completionTokens >= 0)
+    {
+        stats.insert(QStringLiteral("tokens"), completionTokens);
+        stats.insert(QStringLiteral("completion_tokens"), completionTokens);
+    }
+    if (promptTokens >= 0)
+        stats.insert(QStringLiteral("prompt_tokens"), promptTokens);
+    if (totalTokens >= 0)
+        stats.insert(QStringLiteral("total_tokens"), totalTokens);
+    if (elapsedMs >= 0)
+        stats.insert(QStringLiteral("elapsed_ms"), static_cast<qint64>(elapsedMs));
+    if (tokensPerSecond > 0.0)
+        stats.insert(QStringLiteral("tokens_per_second"), tokensPerSecond);
+    return stats;
 }
 
 QJsonObject capabilityPayloadFromConfig(const QString &configPath)
@@ -345,6 +459,62 @@ QJsonObject AcpRuntime::backendStatePayload() const
     payload.insert(QStringLiteral("last_error"), bridgeError.isEmpty() ? lastError_ : bridgeError);
     payload.insert(QStringLiteral("last_output_tail"), lastOutput_);
     return payload;
+}
+
+QJsonObject AcpRuntime::skillsPayload(QString *errorMessage)
+{
+    if (bridgeModeEnabled() && bridgeClient_)
+    {
+        QString err;
+        QJsonObject payload = bridgeClient_->listSkills(&err, 3000);
+        if (!payload.isEmpty()) return payload;
+        if (errorMessage) *errorMessage = err.isEmpty() ? QStringLiteral("Bridge skills query failed.") : err;
+        QJsonObject unavailable;
+        unavailable.insert(QStringLiteral("ok"), false);
+        unavailable.insert(QStringLiteral("bridge"), false);
+        unavailable.insert(QStringLiteral("error"), errorMessage ? *errorMessage : QStringLiteral("Bridge skills query failed."));
+        unavailable.insert(QStringLiteral("skills"), QJsonArray());
+        return unavailable;
+    }
+
+    if (errorMessage)
+        *errorMessage = QStringLiteral("Skills management requires the main EVA bridge; the direct runtime does not host Skills yet.");
+    QJsonObject payload;
+    payload.insert(QStringLiteral("ok"), false);
+    payload.insert(QStringLiteral("bridge"), false);
+    payload.insert(QStringLiteral("error"), errorMessage ? *errorMessage : QStringLiteral("Skills management unavailable."));
+    payload.insert(QStringLiteral("skills"), QJsonArray());
+    return payload;
+}
+
+bool AcpRuntime::applySkillAction(const QJsonObject &request, QJsonObject *payload, QString *errorMessage)
+{
+    const QString op = request.value(QStringLiteral("op")).toString().trimmed().toLower();
+    if (op != QStringLiteral("set_enabled") && op != QStringLiteral("remove") && op != QStringLiteral("refresh"))
+    {
+        if (errorMessage) *errorMessage = QStringLiteral("Unsupported skill operation: %1").arg(op);
+        if (payload) *payload = skillsPayload(nullptr);
+        return false;
+    }
+
+    if (bridgeModeEnabled() && bridgeClient_)
+    {
+        QString err;
+        QJsonObject result = bridgeClient_->applySkillAction(request, &err, 5000);
+        if (!result.isEmpty())
+        {
+            if (payload) *payload = result;
+            return true;
+        }
+        if (errorMessage) *errorMessage = err.isEmpty() ? QStringLiteral("Bridge skill operation failed.") : err;
+        if (payload) *payload = skillsPayload(nullptr);
+        return false;
+    }
+
+    if (errorMessage)
+        *errorMessage = QStringLiteral("Skills management requires the main EVA bridge; the direct runtime does not host Skills yet.");
+    if (payload) *payload = skillsPayload(nullptr);
+    return false;
 }
 
 bool AcpRuntime::loadBackend(const QJsonObject &request, QString *errorMessage)
@@ -1017,6 +1187,9 @@ QJsonObject AcpRuntime::streamChatCompletion(const QJsonObject &request,
                                              const std::function<void(const QString &role, const QString &chunk)> &onChunk,
                                              QString *errorMessage)
 {
+    QElapsedTimer turnTimer;
+    turnTimer.start();
+
     if (bridgeModeEnabled() && bridgeClient_)
     {
         QString text;
@@ -1108,6 +1281,7 @@ QJsonObject AcpRuntime::streamChatCompletion(const QJsonObject &request,
         QString stateError;
         const QJsonObject liveState = bridgeClient_->getState(&stateError, 1500);
         const QString liveModel = liveState.value(QStringLiteral("current_model")).toString();
+        const QJsonObject stats = chatStatsPayload(liveState, QJsonObject(), cleanAnswer, turnTimer.elapsed());
 
         QJsonObject message;
         message.insert(QStringLiteral("role"), QStringLiteral("assistant"));
@@ -1132,6 +1306,10 @@ QJsonObject AcpRuntime::streamChatCompletion(const QJsonObject &request,
         response.insert(QStringLiteral("eva_route"), QStringLiteral("bridge"));
         response.insert(QStringLiteral("conversation_owner"), QStringLiteral("widget"));
         response.insert(QStringLiteral("message_input_mode"), QStringLiteral("latest_user_text"));
+        response.insert(QStringLiteral("eva_stats"), stats);
+        qInfo().noquote() << QStringLiteral("[acp][runtime] bridge chat finished content_chars=%1 stats=%2")
+                                 .arg(cleanAnswer.size())
+                                 .arg(QString::fromUtf8(QJsonDocument(stats).toJson(QJsonDocument::Compact)));
         return response;
     }
 
@@ -1206,6 +1384,9 @@ QJsonObject AcpRuntime::streamChatCompletion(const QJsonObject &request,
         QString assistantText;
         QString runtimeError;
         bool finished = false;
+        RuntimeState latestEventState;
+        bool latestEventStateValid = false;
+        QJsonObject latestMetrics;
         QMetaObject::Connection eventConn;
         eventConn = connect(runtimeCore_, &EvaRuntime::runtimeEvent, this, [&](const RuntimeEvent &event)
         {
@@ -1213,6 +1394,8 @@ QJsonObject AcpRuntime::streamChatCompletion(const QJsonObject &request,
             {
                 return;
             }
+            latestEventState = event.state;
+            latestEventStateValid = true;
             if (event.type == RuntimeEventType::OutputChunk)
             {
                 assistantText += event.text;
@@ -1226,6 +1409,11 @@ QJsonObject AcpRuntime::streamChatCompletion(const QJsonObject &request,
             {
                 finished = true;
                 loop.quit();
+            }
+            else if (event.type == RuntimeEventType::Metrics)
+            {
+                for (auto it = event.payload.constBegin(); it != event.payload.constEnd(); ++it)
+                    latestMetrics.insert(it.key(), it.value());
             }
         });
 
@@ -1262,6 +1450,10 @@ QJsonObject AcpRuntime::streamChatCompletion(const QJsonObject &request,
         QJsonObject message;
         message.insert(QStringLiteral("role"), QStringLiteral("assistant"));
         message.insert(QStringLiteral("content"), assistantText);
+        const QJsonObject stats = chatStatsPayload(latestEventStateValid ? runtimeStateToJson(latestEventState) : QJsonObject(),
+                                                   latestMetrics,
+                                                   assistantText,
+                                                   turnTimer.elapsed());
 
         QJsonObject choice;
         choice.insert(QStringLiteral("index"), 0);
@@ -1280,6 +1472,11 @@ QJsonObject AcpRuntime::streamChatCompletion(const QJsonObject &request,
         response.insert(QStringLiteral("eva_route"), QStringLiteral("direct_runtime"));
         response.insert(QStringLiteral("conversation_owner"), QStringLiteral("acp_runtime"));
         response.insert(QStringLiteral("message_input_mode"), QStringLiteral("request_messages"));
+        response.insert(QStringLiteral("eva_stats"), stats);
+        qInfo().noquote() << QStringLiteral("[acp][runtime] direct chat finished content_chars=%1 error=%2 stats=%3")
+                                 .arg(assistantText.size())
+                                 .arg(runtimeError)
+                                 .arg(QString::fromUtf8(QJsonDocument(stats).toJson(QJsonDocument::Compact)));
         return response;
     }
 

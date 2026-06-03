@@ -28,8 +28,8 @@
 
 ## 5. Verification
 
-- [ ] 5.1 Build `eva` and `eva_acp` with the existing CMake workflow.
-- [ ] 5.2 Smoke-test WebUI startup, `/health`, `/api/backend/state`, `/v1/models`, and static resource serving.
+- [x] 5.1 Build `eva` and `eva_acp` with the existing CMake workflow.
+- [x] 5.2 Smoke-test WebUI startup, `/health`, `/api/backend/state`, `/v1/models`, and static resource serving.
 - [ ] 5.3 Smoke-test bridge mode with main EVA running: list models, load local, switch link mode, reset, send non-streaming chat, send streaming chat.
-- [ ] 5.4 Smoke-test bridge-unavailable behavior with main EVA stopped.
+- [x] 5.4 Smoke-test bridge-unavailable behavior with main EVA stopped.
 - [x] 5.5 Run `python3 scripts/update_feature_log.py` with a concise implementation summary after code changes are complete.

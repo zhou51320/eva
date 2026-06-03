@@ -1,4 +1,4 @@
-import type { ApiMessage, BackendState, GenerationSettings, LoadPayload, ModelInfo } from './types'
+import type { ApiMessage, BackendState, ChatStats, GenerationSettings, LoadPayload, ModelInfo, SkillAction, SkillsState } from './types'
 
 async function parseJson(response: Response): Promise<any> {
   const text = await response.text()
@@ -37,6 +37,22 @@ export async function applyLoad(payload: LoadPayload): Promise<BackendState> {
   )
 }
 
+export async function fetchSkills(): Promise<SkillsState> {
+  const json = await parseJson(await fetch('/api/runtime/skills'))
+  return { ...json, skills: Array.isArray(json.skills) ? json.skills : [] }
+}
+
+export async function applySkillAction(payload: SkillAction): Promise<SkillsState> {
+  const json = await parseJson(
+    await fetch('/api/runtime/skills', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }),
+  )
+  return { ...json, skills: Array.isArray(json.skills) ? json.skills : [] }
+}
+
 export async function resetConversation(): Promise<BackendState> {
   return parseJson(await fetch('/api/runtime/reset', { method: 'POST' }))
 }
@@ -59,6 +75,7 @@ export async function stopTurn(): Promise<BackendState> {
 export interface ChatDelta {
   content: string
   reasoning: string
+  stats?: ChatStats
 }
 
 export interface ChatStreamCallbacks {
@@ -105,13 +122,15 @@ export async function sendChat(
 
   let content = ''
   let reasoning = ''
+  let stats: ChatStats | undefined
 
   if (!options.stream || !response.body) {
     const data = await response.json()
     content = data.choices?.[0]?.message?.content || ''
     reasoning = data.choices?.[0]?.message?.reasoning || ''
-    callbacks.onDelta({ content, reasoning })
-    return { content, reasoning }
+    stats = normalizeStats(data.eva_stats || data.usage)
+    callbacks.onDelta({ content, reasoning, stats })
+    return { content, reasoning, stats }
   }
 
   const reader = response.body.getReader()
@@ -134,9 +153,12 @@ export async function sendChat(
       if (data.eva_final) {
         if (typeof data.eva_final.content === 'string') content = data.eva_final.content
         if (typeof data.eva_final.reasoning === 'string') reasoning = data.eva_final.reasoning
-        callbacks.onDelta({ content, reasoning })
+        if (data.eva_final.stats) stats = normalizeStats(data.eva_final.stats)
+        callbacks.onDelta({ content, reasoning, stats })
         continue
       }
+      if (data.eva_stats) stats = normalizeStats(data.eva_stats)
+      if (data.usage) stats = normalizeStats(data.usage)
       const delta = data.choices?.[0]?.delta || {}
       if (typeof delta.eva_tool === 'string') {
         callbacks.onToolStep?.(delta.eva_tool)
@@ -148,11 +170,38 @@ export async function sendChat(
       if (!delta.content && data.choices?.[0]?.message?.content) {
         content += data.choices[0].message.content
       }
-      callbacks.onDelta({ content, reasoning })
+      callbacks.onDelta({ content, reasoning, stats })
     }
   }
 
-  return { content, reasoning }
+  return { content, reasoning, stats }
+}
+
+function numberFrom(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value)
+    if (Number.isFinite(parsed)) return parsed
+  }
+  return undefined
+}
+
+function normalizeStats(raw: any): ChatStats | undefined {
+  if (!raw || typeof raw !== 'object') return undefined
+  const completion = numberFrom(raw.completion_tokens ?? raw.generated_tokens ?? raw.predicted_tokens ?? raw.tokens)
+  const prompt = numberFrom(raw.prompt_tokens ?? raw.input_tokens)
+  const total = numberFrom(raw.total_tokens) ?? (prompt !== undefined && completion !== undefined ? prompt + completion : undefined)
+  const elapsed = numberFrom(raw.elapsed_ms ?? raw.duration_ms)
+  const tps = numberFrom(raw.tokens_per_second ?? raw.predicted_per_second ?? raw.tps)
+  const stats: ChatStats = {
+    tokens: numberFrom(raw.tokens) ?? completion ?? total,
+    promptTokens: prompt,
+    completionTokens: completion,
+    totalTokens: total,
+    elapsedMs: elapsed,
+    tokensPerSecond: tps,
+  }
+  return Object.values(stats).some((value) => value !== undefined) ? stats : undefined
 }
 
 export function normalizeError(raw: unknown, fallback: string): string {

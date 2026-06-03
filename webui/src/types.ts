@@ -12,9 +12,20 @@ export interface ChatMessage {
   toolSteps?: string[]
   /** Short status line shown under the message (e.g. "完成", "流式输出", "错误"). */
   meta?: string
+  /** Final per-turn statistics shown in the assistant footer. */
+  stats?: ChatStats
   /** True while the assistant message is still being streamed. */
   pending?: boolean
   error?: boolean
+}
+
+export interface ChatStats {
+  tokens?: number
+  promptTokens?: number
+  completionTokens?: number
+  totalTokens?: number
+  elapsedMs?: number
+  tokensPerSecond?: number
 }
 
 /** Generation/sampling settings, sent as standard OpenAI request fields. */
@@ -50,6 +61,31 @@ export interface Session {
   messages: ChatMessage[]
   createdAt: string
 }
+
+export interface SkillRecord {
+  id: string
+  description?: string
+  license?: string
+  frontmatterBody?: string
+  skillRootPath?: string
+  skillFilePath?: string
+  enabled: boolean
+}
+
+export interface SkillsState {
+  ok?: boolean
+  bridge?: boolean
+  skillsRoot?: string
+  engineerEnabled?: boolean
+  error?: string
+  accepted?: boolean
+  skills: SkillRecord[]
+}
+
+export type SkillAction =
+  | { op: 'refresh' }
+  | { op: 'set_enabled'; id: string; enabled: boolean }
+  | { op: 'remove'; id: string }
 
 export interface ModelInfo {
   id: string

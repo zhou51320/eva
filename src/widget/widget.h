@@ -1158,6 +1158,7 @@ class Widget : public QWidget, public SessionHostPort, public ToolFlowHostPort
     void sendAcpBridgeResponse(const QJsonObject &payload);
     bool applyAcpBridgeLoad(const QJsonObject &payload, QString *errorMessage);
     bool applyBridgeCapabilities(const QJsonObject &payload, QString *errorMessage);
+    bool applyBridgeSkillAction(const QJsonObject &payload, QString *errorMessage);
     bool resetAcpBridgeConversation(QString *errorMessage);
     bool sendBridgeText(const QString &text, const QStringList &imagePaths, QString *errorMessage);
     void sendToRemotePeers(const QJsonObject &payload);
@@ -1184,6 +1185,7 @@ class Widget : public QWidget, public SessionHostPort, public ToolFlowHostPort
     QJsonArray buildControlRecords() const;
     QJsonObject buildAcpBridgeState() const;
     QJsonArray buildAcpBridgeModels() const;
+    QJsonObject buildAcpBridgeSkills() const;
 
   private:
     void syncDefaultSystemPrompt(); // 切换语种时刷新默认系统提示词

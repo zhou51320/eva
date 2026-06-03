@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
 import { store } from '../store'
-import type { BackendCapabilities, LoadPayload, RuntimeMode } from '../types'
+import type { BackendCapabilities, LoadPayload, RuntimeMode, SkillRecord } from '../types'
 
 const s = store.state
-const tab = ref<'settings' | 'load' | 'models' | 'tools' | 'state'>('settings')
+const tab = ref<'settings' | 'load' | 'models' | 'tools' | 'skills' | 'state'>('settings')
 
 const form = reactive({
   mode: 'local' as RuntimeMode,
@@ -117,6 +117,14 @@ const statePairs = computed(() => {
 })
 
 const bridged = computed(() => Boolean(caps.value.full_eva_stack))
+const skills = computed<SkillRecord[]>(() => s.skills?.skills || [])
+const skillsAvailable = computed(() => Boolean(s.skills?.ok && s.skills?.bridge))
+const engineerEnabled = computed(() => Boolean(s.skills?.engineerEnabled || toolState('engineer').enabled))
+
+function removeSkill(skill: SkillRecord) {
+  if (!window.confirm(`确定要删除 Skill “${skill.id}” 吗？此操作会删除本地 Skill 目录。`)) return
+  store.removeSkill(skill.id)
+}
 </script>
 
 <template>
@@ -137,6 +145,7 @@ const bridged = computed(() => Boolean(caps.value.full_eva_stack))
         <button :class="{ on: tab === 'load' }" @click="tab = 'load'">装载</button>
         <button :class="{ on: tab === 'models' }" @click="tab = 'models'">模型</button>
         <button :class="{ on: tab === 'tools' }" @click="tab = 'tools'">工具</button>
+        <button :class="{ on: tab === 'skills' }" @click="tab = 'skills'">Skills</button>
         <button :class="{ on: tab === 'state' }" @click="tab = 'state'">状态</button>
       </nav>
 
@@ -253,6 +262,45 @@ const bridged = computed(() => Boolean(caps.value.full_eva_stack))
           </div>
           <p v-if="s.loadFeedback" class="feedback">{{ s.loadFeedback }}</p>
           <div class="cap-line">工具执行路径:<b>{{ caps.tool_execution_route || '-' }}</b></div>
+        </section>
+
+        <!-- SKILLS -->
+        <section v-else-if="tab === 'skills'" class="pane">
+          <div class="toolbar-row">
+            <button class="ghost" :disabled="s.skillsLoading" @click="store.requestSkillsRefresh()">{{ s.skillsLoading ? '刷新中…' : '刷新 Skills' }}</button>
+            <span class="cap-line">根目录:<b>{{ s.skills?.skillsRoot || '-' }}</b></span>
+          </div>
+          <p v-if="!skillsAvailable" class="feedback">
+            {{ s.skills?.error || 'Skills 管理需要连接正在运行的 EVA 主程序桥接。' }}
+          </p>
+          <p v-else-if="!engineerEnabled" class="muted muted--warn">
+            已启用的 Skills 只有在“系统工程师”能力开启后才会注入并可被调用；管理 Skills 不会自动开启系统工程师。
+          </p>
+          <p v-if="skills.length === 0" class="muted">当前没有已安装 Skills。第一版仅管理已安装 Skills，不提供浏览器上传/导入。</p>
+          <div v-for="skill in skills" :key="skill.id" class="skill-card" :class="{ 'skill-card--off': !skill.enabled }">
+            <div class="skill-card__top">
+              <div>
+                <div class="skill-card__id">{{ skill.id || 'unnamed-skill' }}</div>
+                <div class="skill-card__meta">
+                  <span v-if="skill.license">license: {{ skill.license }}</span>
+                  <span>{{ skill.enabled ? '已启用' : '未启用' }}</span>
+                </div>
+              </div>
+              <label class="switch" :class="{ 'switch--busy': s.skillsLoading }">
+                <input
+                  type="checkbox"
+                  :checked="skill.enabled"
+                  :disabled="s.skillsLoading || !skillsAvailable"
+                  @change="store.toggleSkill(skill.id, ($event.target as HTMLInputElement).checked)"
+                />
+                <span class="switch__track"><span class="switch__thumb"></span></span>
+              </label>
+            </div>
+            <p v-if="skill.description" class="skill-card__desc">{{ skill.description }}</p>
+            <div class="skill-card__path">{{ skill.skillFilePath || skill.skillRootPath }}</div>
+            <button class="danger" :disabled="s.skillsLoading || !skillsAvailable" @click="removeSkill(skill)">删除 Skill</button>
+          </div>
+          <p v-if="s.skillsFeedback" class="feedback">{{ s.skillsFeedback }}</p>
         </section>
 
         <!-- STATE / CONNECTION -->
@@ -519,6 +567,71 @@ const bridged = computed(() => Boolean(caps.value.full_eva_stack))
 }
 .cap-line b {
   color: var(--text);
+}
+.toolbar-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.skill-card {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 12px 13px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+.skill-card--off {
+  opacity: 0.78;
+}
+.skill-card__top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.skill-card__id {
+  font-weight: 600;
+  font-size: 13.5px;
+  word-break: break-word;
+}
+.skill-card__meta {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  color: var(--text-faint);
+  font-size: 11.5px;
+  margin-top: 2px;
+}
+.skill-card__desc {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.skill-card__path {
+  color: var(--text-faint);
+  font-size: 11.5px;
+  word-break: break-all;
+}
+.danger {
+  align-self: flex-start;
+  height: 30px;
+  padding: 0 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--danger, #d65a5a);
+  background: transparent;
+  color: var(--danger, #d65a5a);
+  font-size: 12px;
+}
+.danger:hover:not(:disabled) {
+  background: rgba(214, 90, 90, 0.1);
+}
+.muted--warn {
+  color: var(--accent-text);
 }
 
 .switch {

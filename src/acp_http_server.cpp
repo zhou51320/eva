@@ -7,6 +7,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QAbstractSocket>
 #include <QHostAddress>
 #include <QJsonDocument>
 #include <QTcpSocket>
@@ -84,11 +85,21 @@ void AcpHttpServer::handleNewConnection()
     while (server_.hasPendingConnections())
     {
         QTcpSocket *socket = server_.nextPendingConnection();
+        qInfo().noquote() << QStringLiteral("[acp][http] connection from %1:%2")
+                                  .arg(socket->peerAddress().toString())
+                                  .arg(socket->peerPort());
         auto buffer = std::make_shared<QByteArray>();
         connect(socket, &QTcpSocket::readyRead, this, [this, socket, buffer]()
         {
             buffer->append(socket->readAll());
             processBuffer(socket, *buffer);
+        });
+        connect(socket, &QAbstractSocket::errorOccurred, socket, [socket](QAbstractSocket::SocketError)
+        {
+            qWarning().noquote() << QStringLiteral("[acp][http] socket error from %1:%2 %3")
+                                        .arg(socket->peerAddress().toString())
+                                        .arg(socket->peerPort())
+                                        .arg(socket->errorString());
         });
         connect(socket, &QTcpSocket::disconnected, socket, &QObject::deleteLater);
     }
@@ -149,6 +160,10 @@ void AcpHttpServer::processBuffer(QTcpSocket *socket, QByteArray &buffer)
     }
     const QString path = normalizePath(QString::fromUtf8(requestParts.at(1).trimmed()));
     const QByteArray body = buffer.mid(bodyStart, contentLength);
+    qInfo().noquote() << QStringLiteral("[acp][http] %1 %2 body=%3")
+                             .arg(QString::fromLatin1(method))
+                             .arg(path)
+                             .arg(body.size());
     handleRequest(socket, method, path, headers, body);
 }
 
@@ -321,7 +336,60 @@ void AcpHttpServer::handleRequest(QTcpSocket *socket,
         return;
     }
 
-    if (path == QStringLiteral("/api/backend/load") || path == QStringLiteral("/api/runtime/reset") || path == QStringLiteral("/api/runtime/stop") || path == QStringLiteral("/api/runtime/tools") || path == QStringLiteral("/v1/chat/completions") || path == QStringLiteral("/v1/models"))
+    if (method == QByteArrayLiteral("GET") && path == QStringLiteral("/api/runtime/skills"))
+    {
+        QString errorMessage;
+        const QJsonObject payload = runtime_->skillsPayload(&errorMessage);
+        const bool ok = payload.value(QStringLiteral("ok")).toBool(false);
+        writeJson(socket,
+                  ok ? 200 : 503,
+                  ok ? QByteArrayLiteral("OK") : QByteArrayLiteral("Service Unavailable"),
+                  payload);
+        return;
+    }
+
+    if (method == QByteArrayLiteral("POST") && path == QStringLiteral("/api/runtime/skills"))
+    {
+        QJsonObject request;
+        if (!body.trimmed().isEmpty())
+        {
+            QJsonParseError parseError;
+            const QJsonDocument doc = QJsonDocument::fromJson(body, &parseError);
+            if (parseError.error != QJsonParseError::NoError || !doc.isObject())
+            {
+                QJsonObject payload;
+                payload.insert(QStringLiteral("ok"), false);
+                payload.insert(QStringLiteral("accepted"), false);
+                payload.insert(QStringLiteral("error"), QStringLiteral("Invalid JSON body"));
+                payload.insert(QStringLiteral("details"), parseError.errorString());
+                writeJson(socket, 400, QByteArrayLiteral("Bad Request"), payload);
+                return;
+            }
+            request = doc.object();
+        }
+
+        QString errorMessage;
+        QJsonObject skillsPayload;
+        if (!runtime_->applySkillAction(request, &skillsPayload, &errorMessage))
+        {
+            QJsonObject payload = skillsPayload;
+            payload.insert(QStringLiteral("ok"), false);
+            payload.insert(QStringLiteral("accepted"), false);
+            payload.insert(QStringLiteral("error"), errorMessage);
+            const QString lc = errorMessage.toLower();
+            const bool unavailable = lc.contains(QStringLiteral("bridge")) || lc.contains(QStringLiteral("requires")) || lc.contains(QStringLiteral("unavailable"));
+            writeJson(socket, unavailable ? 503 : 400, unavailable ? QByteArrayLiteral("Service Unavailable") : QByteArrayLiteral("Bad Request"), payload);
+            return;
+        }
+
+        QJsonObject payload = skillsPayload;
+        payload.insert(QStringLiteral("ok"), true);
+        payload.insert(QStringLiteral("accepted"), true);
+        writeJson(socket, 200, QByteArrayLiteral("OK"), payload);
+        return;
+    }
+
+    if (path == QStringLiteral("/api/backend/load") || path == QStringLiteral("/api/runtime/reset") || path == QStringLiteral("/api/runtime/stop") || path == QStringLiteral("/api/runtime/tools") || path == QStringLiteral("/api/runtime/skills") || path == QStringLiteral("/v1/chat/completions") || path == QStringLiteral("/v1/models"))
     {
         QJsonObject payload;
         payload.insert(QStringLiteral("error"), QStringLiteral("Method not allowed"));
@@ -423,6 +491,10 @@ void AcpHttpServer::proxyChatCompletions(QTcpSocket *socket,
 
     const bool bridgeRoute = runtime_->bridgeModeEnabled();
     const bool directRoute = !bridgeRoute && runtime_->directRuntimeEnabled();
+    qInfo().noquote() << QStringLiteral("[acp][chat] completions stream=%1 route=%2 body=%3")
+                             .arg(streaming ? QStringLiteral("true") : QStringLiteral("false"),
+                                  bridgeRoute ? QStringLiteral("bridge") : (directRoute ? QStringLiteral("direct") : QStringLiteral("unavailable")),
+                                  QString::number(body.size()));
     if (bridgeRoute || directRoute)
     {
         QString errorMessage;
@@ -431,11 +503,14 @@ void AcpHttpServer::proxyChatCompletions(QTcpSocket *socket,
             const QJsonObject response = runtime_->chatCompletion(requestObject, &errorMessage);
             if (response.isEmpty())
             {
+                qWarning().noquote() << QStringLiteral("[acp][chat] non-stream failed: %1")
+                                            .arg(errorMessage.isEmpty() ? QStringLiteral("Runtime chat failed.") : errorMessage);
                 QJsonObject payload;
                 payload.insert(QStringLiteral("error"), errorMessage.isEmpty() ? QStringLiteral("Runtime chat failed.") : errorMessage);
                 writeJson(socket, 502, QByteArrayLiteral("Bad Gateway"), payload);
                 return;
             }
+            qInfo().noquote() << QStringLiteral("[acp][chat] non-stream completed");
             writeJson(socket, 200, QByteArrayLiteral("OK"), response);
             return;
         }
@@ -473,6 +548,8 @@ void AcpHttpServer::proxyChatCompletions(QTcpSocket *socket,
             &errorMessage);
         if (response.isEmpty())
         {
+            qWarning().noquote() << QStringLiteral("[acp][chat] stream failed: %1")
+                                        .arg(errorMessage.isEmpty() ? QStringLiteral("Runtime chat failed.") : errorMessage);
             QJsonObject payload;
             payload.insert(QStringLiteral("error"), errorMessage.isEmpty() ? QStringLiteral("Runtime chat failed.") : errorMessage);
             socket->write("data: ");
@@ -489,6 +566,9 @@ void AcpHttpServer::proxyChatCompletions(QTcpSocket *socket,
         evaFinal.insert(QStringLiteral("content"), finalMsg.value(QStringLiteral("content")).toString());
         if (finalMsg.contains(QStringLiteral("reasoning")))
             evaFinal.insert(QStringLiteral("reasoning"), finalMsg.value(QStringLiteral("reasoning")).toString());
+        // 最后一帧同时下发权威答案和本轮统计，前端只需要监听 eva_final 即可完成收尾。
+        if (response.contains(QStringLiteral("eva_stats")))
+            evaFinal.insert(QStringLiteral("stats"), response.value(QStringLiteral("eva_stats")).toObject());
         QJsonObject finalChoice;
         finalChoice.insert(QStringLiteral("index"), 0);
         finalChoice.insert(QStringLiteral("delta"), QJsonObject());
@@ -504,6 +584,8 @@ void AcpHttpServer::proxyChatCompletions(QTcpSocket *socket,
         socket->write("\n\n");
         socket->flush();
         socket->write("data: [DONE]\n\n");
+        qInfo().noquote() << QStringLiteral("[acp][chat] stream completed stats=%1")
+                                 .arg(QString::fromUtf8(QJsonDocument(evaFinal.value(QStringLiteral("stats")).toObject()).toJson(QJsonDocument::Compact)));
         socket->disconnectFromHost();
         return;
     }
@@ -556,6 +638,9 @@ void AcpHttpServer::writeStreamHeaders(QTcpSocket *socket,
     response.append("Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n");
     response.append("\r\n");
     socket->write(response);
+    qInfo().noquote() << QStringLiteral("[acp][http] stream headers status=%1 type=%2")
+                             .arg(statusCode)
+                             .arg(QString::fromLatin1(contentType));
 }
 
 void AcpHttpServer::writeResponse(QTcpSocket *socket,
@@ -585,5 +670,8 @@ void AcpHttpServer::writeResponse(QTcpSocket *socket,
     response.append("\r\n");
     response.append(body);
     socket->write(response);
+    qInfo().noquote() << QStringLiteral("[acp][http] response status=%1 bytes=%2")
+                             .arg(statusCode)
+                             .arg(body.size());
     socket->disconnectFromHost();
 }

@@ -4,14 +4,27 @@ import type { ChatMessage } from '../types'
 import { renderMarkdown } from '../markdown'
 
 const props = defineProps<{ message: ChatMessage }>()
+const emit = defineEmits<{ retry: [] }>()
 
 const reasoningOpen = ref(true)
 watch(
-  () => props.message.pending,
-  (pending, was) => {
-    if (was && !pending) reasoningOpen.value = false // collapse once thinking is done
+  () => ({
+    pending: Boolean(props.message.pending),
+    hasReasoning: Boolean(props.message.reasoning),
+    hasContent: Boolean(props.message.content),
+  }),
+  (value, previous) => {
+    if (!value.hasReasoning) return
+    if (value.pending && !value.hasContent) reasoningOpen.value = true
+    if (value.hasContent && (!previous?.hasContent || !previous?.hasReasoning)) reasoningOpen.value = false
+    if (previous?.pending && !value.pending) reasoningOpen.value = false
   },
+  { immediate: true },
 )
+
+function onReasoningToggle(event: Event) {
+  reasoningOpen.value = (event.currentTarget as HTMLDetailsElement).open
+}
 
 function copyText(text: string, btn?: HTMLElement) {
   const done = () => {
@@ -55,6 +68,23 @@ function onBodyClick(event: MouseEvent) {
   const code = btn.closest('.codeblock')?.querySelector('code')
   if (code) copyText(code.textContent || '', btn)
 }
+
+function formatTokens(value?: number): string {
+  if (!Number.isFinite(value)) return '0 tokens'
+  return `${Math.round(value as number).toLocaleString()} tokens`
+}
+
+function formatDuration(ms?: number): string {
+  if (!Number.isFinite(ms)) return '0s'
+  const seconds = Math.max(0, (ms as number) / 1000)
+  if (seconds < 10) return `${seconds.toFixed(1)}s`
+  return `${Math.round(seconds)}s`
+}
+
+function formatSpeed(value?: number): string {
+  if (!Number.isFinite(value) || (value as number) <= 0) return '0.00 t/s'
+  return `${(value as number).toFixed(2)} t/s`
+}
 </script>
 
 <template>
@@ -73,7 +103,7 @@ function onBodyClick(event: MouseEvent) {
     <template v-else>
       <div class="avatar">{{ message.role === 'system' ? 'S' : 'E' }}</div>
       <div class="content">
-        <details v-if="message.reasoning" class="reasoning" :open="reasoningOpen">
+        <details v-if="message.reasoning" class="reasoning" :open="reasoningOpen" @toggle="onReasoningToggle">
           <summary>
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7V17h8v-2.3A7 7 0 0 0 12 2z" /></svg>
             思考过程
@@ -101,14 +131,21 @@ function onBodyClick(event: MouseEvent) {
 
         <div class="footer">
           <span class="meta">{{ message.meta }}</span>
-          <button
-            v-if="message.content && !message.pending"
-            class="copy-msg"
-            title="复制"
-            @click="(e) => copyText(message.content, (e.currentTarget as HTMLElement))"
-          >
-            复制
-          </button>
+          <span v-if="message.content && !message.pending" class="actions">
+            <button
+              class="msg-action"
+              title="复制"
+              @click="(e) => copyText(message.content, (e.currentTarget as HTMLElement))"
+            >
+              复制
+            </button>
+            <button v-if="message.role === 'assistant'" class="msg-action" title="重答" @click="emit('retry')">重答</button>
+          </span>
+          <span v-if="message.role === 'assistant' && message.stats && !message.pending" class="stats">
+            <span>{{ formatTokens(message.stats.tokens) }}</span>
+            <span>{{ formatDuration(message.stats.elapsedMs) }}</span>
+            <span>{{ formatSpeed(message.stats.tokensPerSecond) }}</span>
+          </span>
         </div>
       </div>
     </template>
@@ -231,27 +268,50 @@ function onBodyClick(event: MouseEvent) {
 .footer {
   display: flex;
   align-items: center;
-  gap: 12px;
+  flex-wrap: wrap;
+  column-gap: 9px;
+  row-gap: 4px;
   margin-top: 8px;
-  min-height: 18px;
+  min-height: 20px;
+  font-size: 11.5px;
+  line-height: 20px;
 }
 .meta {
-  font-size: 11.5px;
   color: var(--text-faint);
+  line-height: 20px;
 }
-.copy-msg {
-  font-size: 11.5px;
+.stats {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-faint);
+  line-height: 20px;
+}
+.stats span {
+  white-space: nowrap;
+  line-height: 20px;
+}
+.actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 20px;
+  line-height: 20px;
+}
+.msg-action {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  font: inherit;
+  line-height: 20px;
   color: var(--text-faint);
   background: transparent;
   border: none;
   padding: 0;
-  opacity: 0;
-  transition: opacity 0.15s, color 0.15s;
+  margin: 0;
+  transition: color 0.15s;
 }
-.content:hover .copy-msg {
-  opacity: 1;
-}
-.copy-msg:hover {
+.msg-action:hover {
   color: var(--accent-text);
 }
 

@@ -115,6 +115,18 @@ QJsonArray AcpBridgeClient::listModels(QString *errorMessage, int timeoutMs)
     return response.value(QStringLiteral("models")).toArray();
 }
 
+QJsonObject AcpBridgeClient::listSkills(QString *errorMessage, int timeoutMs)
+{
+    QJsonObject response = request(QStringLiteral("bridge_list_skills"), QJsonObject(), errorMessage, timeoutMs);
+    return response.value(QStringLiteral("skills_payload")).toObject();
+}
+
+QJsonObject AcpBridgeClient::applySkillAction(const QJsonObject &payload, QString *errorMessage, int timeoutMs)
+{
+    QJsonObject response = request(QStringLiteral("bridge_apply_skill_action"), payload, errorMessage, timeoutMs);
+    return response.value(QStringLiteral("skills_payload")).toObject();
+}
+
 QJsonObject AcpBridgeClient::applyLoad(const QJsonObject &payload, QString *errorMessage, int timeoutMs)
 {
     QJsonObject response = request(QStringLiteral("bridge_apply_load"), payload, errorMessage, timeoutMs);

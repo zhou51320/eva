@@ -157,6 +157,19 @@ QJsonObject widgetCapabilityPayload(const QString &configPath,
     return payload;
 }
 
+QJsonObject skillRecordPayload(const SkillManager::SkillRecord &rec)
+{
+    QJsonObject obj;
+    obj.insert(QStringLiteral("id"), rec.id);
+    obj.insert(QStringLiteral("description"), rec.description);
+    obj.insert(QStringLiteral("license"), rec.license);
+    obj.insert(QStringLiteral("frontmatterBody"), rec.frontmatterBody);
+    obj.insert(QStringLiteral("skillRootPath"), rec.skillRootPath);
+    obj.insert(QStringLiteral("skillFilePath"), rec.skillFilePath);
+    obj.insert(QStringLiteral("enabled"), rec.enabled);
+    return obj;
+}
+
 // Decode OpenAI image_url data URLs into temp files under EVA_TEMP so the desktop
 // input box (which works with file paths) can attach them for a bridge turn.
 QStringList decodeImageDataUrls(const QJsonArray &images, const QString &appDir)
@@ -1101,6 +1114,26 @@ QJsonArray Widget::buildAcpBridgeModels() const
     return models;
 }
 
+QJsonObject Widget::buildAcpBridgeSkills() const
+{
+    QJsonObject payload;
+    payload.insert(QStringLiteral("ok"), true);
+    payload.insert(QStringLiteral("bridge"), true);
+    payload.insert(QStringLiteral("skillsRoot"), skillManager ? skillManager->skillsRoot() : QString());
+    payload.insert(QStringLiteral("engineerEnabled"), ui_engineer_ischecked);
+
+    QJsonArray skills;
+    if (skillManager)
+    {
+        for (const auto &rec : skillManager->skills())
+        {
+            skills.append(skillRecordPayload(rec));
+        }
+    }
+    payload.insert(QStringLiteral("skills"), skills);
+    return payload;
+}
+
 bool Widget::applyAcpBridgeLoad(const QJsonObject &payload, QString *errorMessage)
 {
     const QString mode = payload.value(QStringLiteral("mode")).toString().trimmed().toLower();
@@ -1194,6 +1227,65 @@ bool Widget::applyBridgeCapabilities(const QJsonObject &payload, QString *errorM
     return true;
 }
 
+bool Widget::applyBridgeSkillAction(const QJsonObject &payload, QString *errorMessage)
+{
+    if (!skillManager)
+    {
+        if (errorMessage) *errorMessage = QStringLiteral("Skill manager is unavailable.");
+        return false;
+    }
+
+    const QString op = payload.value(QStringLiteral("op")).toString().trimmed().toLower();
+    if (op == QStringLiteral("refresh"))
+    {
+        return skillManager->loadFromDisk();
+    }
+
+    const QString skillId = payload.value(QStringLiteral("id")).toString().trimmed();
+    if (skillId.isEmpty())
+    {
+        if (errorMessage) *errorMessage = QStringLiteral("Skill id is required.");
+        return false;
+    }
+
+    bool found = false;
+    for (const auto &rec : skillManager->skills())
+    {
+        if (rec.id == skillId)
+        {
+            found = true;
+            break;
+        }
+    }
+    if (!found)
+    {
+        if (errorMessage) *errorMessage = QStringLiteral("Skill not found: %1").arg(skillId);
+        return false;
+    }
+
+    if (op == QStringLiteral("set_enabled"))
+    {
+        const bool enabled = payload.value(QStringLiteral("enabled")).toBool(false);
+        skillManager->setSkillEnabled(skillId, enabled);
+        return true;
+    }
+
+    if (op == QStringLiteral("remove"))
+    {
+        QString removeError;
+        if (!skillManager->removeSkill(skillId, &removeError))
+        {
+            if (errorMessage) *errorMessage = removeError.isEmpty() ? QStringLiteral("Failed to remove skill: %1").arg(skillId) : removeError;
+            return false;
+        }
+        auto_save_user();
+        return true;
+    }
+
+    if (errorMessage) *errorMessage = QStringLiteral("Unsupported skill operation: %1").arg(op);
+    return false;
+}
+
 bool Widget::resetAcpBridgeConversation(QString *errorMessage)
 {
     if (runtimeBusyForUi())
@@ -1274,6 +1366,31 @@ void Widget::handleAcpBridgeCommand(const QJsonObject &payload)
     {
         response.insert(QStringLiteral("ok"), true);
         response.insert(QStringLiteral("models"), buildAcpBridgeModels());
+        sendAcpBridgeResponse(response);
+        return;
+    }
+    if (name == QStringLiteral("bridge_list_skills"))
+    {
+        response.insert(QStringLiteral("ok"), true);
+        response.insert(QStringLiteral("skills_payload"), buildAcpBridgeSkills());
+        sendAcpBridgeResponse(response);
+        return;
+    }
+    if (name == QStringLiteral("bridge_apply_skill_action"))
+    {
+        QString errorMessage;
+        const bool ok = applyBridgeSkillAction(payload, &errorMessage);
+        response.insert(QStringLiteral("ok"), ok);
+        if (ok)
+        {
+            response.insert(QStringLiteral("accepted"), true);
+            response.insert(QStringLiteral("skills_payload"), buildAcpBridgeSkills());
+        }
+        else
+        {
+            response.insert(QStringLiteral("error"), errorMessage);
+            response.insert(QStringLiteral("skills_payload"), buildAcpBridgeSkills());
+        }
         sendAcpBridgeResponse(response);
         return;
     }

@@ -15,6 +15,10 @@ function scrollToBottom() {
   el.scrollTop = el.scrollHeight
 }
 
+function retryAt(index: number) {
+  store.retryMessage(index)
+}
+
 // Follow the stream / new messages to the bottom.
 watch(
   () => messages.value.map((m) => m.content).join('|') + messages.value.length,
@@ -32,7 +36,7 @@ watch(() => s.activeSessionId, () => nextTick(scrollToBottom))
         <p>直接驱动 EVA 运行层进行对话。先覆盖文本链路,后续接入附件、知识库、MCP 与工具流。</p>
       </div>
 
-      <MessageItem v-for="(msg, i) in messages" :key="i" :message="msg" />
+      <MessageItem v-for="(msg, i) in messages" :key="i" :message="msg" @retry="retryAt(i)" />
     </div>
   </div>
 </template>

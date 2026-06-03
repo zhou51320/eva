@@ -5,12 +5,14 @@ import type {
   ApiMessage,
   BackendState,
   ChatMessage,
+  ChatStats,
   ContentPart,
   GenerationSettings,
   LoadPayload,
   ModelInfo,
   RuntimeMode,
   Session,
+  SkillsState,
 } from './types'
 
 const SESSIONS_KEY = 'eva-acp-webui-sessions'
@@ -29,6 +31,9 @@ interface StoreState {
   loadFeedback: string
   loading: boolean
   settings: GenerationSettings
+  skills: SkillsState | null
+  skillsLoading: boolean
+  skillsFeedback: string
 }
 
 const state = reactive<StoreState>({
@@ -43,6 +48,9 @@ const state = reactive<StoreState>({
   loadFeedback: '',
   loading: false,
   settings: { ...DEFAULT_SETTINGS },
+  skills: null,
+  skillsLoading: false,
+  skillsFeedback: '',
 })
 
 let abortController: AbortController | null = null
@@ -122,6 +130,25 @@ function activeSession(): Session {
     persistSessions()
   }
   return session
+}
+
+function estimateVisibleTokens(text: string): number {
+  const cjk = (text.match(/[\u4e00-\u9fff]/g) || []).length
+  const latinText = text.replace(/[\u4e00-\u9fff]/g, ' ')
+  const latin = (latinText.match(/[A-Za-z0-9_]+/g) || []).length
+  return Math.max(0, cjk + latin)
+}
+
+function completeStats(stats: ChatStats | undefined, content: string, startedAt: number, useTextFallback: boolean): ChatStats {
+  const elapsedMs = stats?.elapsedMs ?? Math.max(0, Math.round(performance.now() - startedAt))
+  const tokens = stats?.tokens ?? stats?.completionTokens ?? stats?.totalTokens ?? (useTextFallback ? estimateVisibleTokens(content) : 0)
+  const tokensPerSecond = stats?.tokensPerSecond ?? (elapsedMs > 0 && tokens > 0 ? (tokens * 1000) / elapsedMs : 0)
+  return {
+    ...stats,
+    tokens,
+    elapsedMs,
+    tokensPerSecond,
+  }
 }
 
 let refreshInFlight: Promise<void> | null = null
@@ -220,13 +247,15 @@ async function sendMessage(text: string, images: string[], stream: boolean) {
 
   state.streaming = true
   abortController = new AbortController()
+  const startedAt = performance.now()
 
   try {
-    await api.sendChat(history, { stream, model: preferredModel(), settings: state.settings }, {
+    const result = await api.sendChat(history, { stream, model: preferredModel(), settings: state.settings }, {
       signal: abortController.signal,
-      onDelta: ({ content, reasoning }) => {
+      onDelta: ({ content, reasoning, stats }) => {
         assistant.content = content
         assistant.reasoning = reasoning
+        if (stats) assistant.stats = completeStats(stats, assistant.content, startedAt, true)
         assistant.meta = reasoning ? '流式输出 · 含思考' : '流式输出'
       },
       onToolStep: (tool) => {
@@ -237,6 +266,7 @@ async function sendMessage(text: string, images: string[], stream: boolean) {
     assistant.pending = false
     assistant.meta = assistant.content ? '完成' : '完成 · 空响应'
     if (!assistant.content) assistant.content = '(空响应)'
+    assistant.stats = completeStats(result.stats ?? assistant.stats, assistant.content, startedAt, true)
   } catch (error) {
     const err = error as Error
     assistant.pending = false
@@ -248,12 +278,33 @@ async function sendMessage(text: string, images: string[], stream: boolean) {
       assistant.meta = '错误'
       assistant.content = `请求失败：${err.message}`
     }
+    assistant.stats = completeStats(assistant.stats, assistant.content, startedAt, false)
   } finally {
     state.streaming = false
     abortController = null
     persistSessions()
     refreshAll()
   }
+}
+
+async function retryMessage(assistantIndex: number) {
+  if (state.streaming) return
+  const session = activeSession()
+  let userIndex = -1
+  for (let i = Math.min(assistantIndex - 1, session.messages.length - 1); i >= 0; --i) {
+    if (session.messages[i].role === 'user') {
+      userIndex = i
+      break
+    }
+  }
+  if (userIndex < 0) return
+
+  const user = session.messages[userIndex]
+  const text = user.content
+  const images = user.images ? user.images.slice() : []
+  session.messages.splice(userIndex)
+  persistSessions()
+  await sendMessage(text, images, true)
 }
 
 async function stop() {
@@ -295,6 +346,65 @@ async function setTool(key: string, value: boolean) {
   }
 }
 
+let skillsRefreshInFlight: Promise<void> | null = null
+async function refreshSkills() {
+  if (skillsRefreshInFlight) return skillsRefreshInFlight
+  skillsRefreshInFlight = (async () => {
+    state.skillsFeedback = ''
+    state.skillsLoading = true
+    try {
+      state.skills = await api.fetchSkills()
+      if (state.skills.error) state.skillsFeedback = state.skills.error
+    } catch (error) {
+      state.skills = { ok: false, bridge: false, error: (error as Error).message, skills: [] }
+      state.skillsFeedback = (error as Error).message
+    } finally {
+      state.skillsLoading = false
+      skillsRefreshInFlight = null
+    }
+  })()
+  return skillsRefreshInFlight
+}
+
+async function requestSkillsRefresh() {
+  state.skillsFeedback = ''
+  state.skillsLoading = true
+  try {
+    state.skills = await api.applySkillAction({ op: 'refresh' })
+    if (state.skills.error) state.skillsFeedback = state.skills.error
+  } catch (error) {
+    state.skillsFeedback = (error as Error).message
+  } finally {
+    state.skillsLoading = false
+  }
+}
+
+async function toggleSkill(id: string, enabled: boolean) {
+  state.skillsFeedback = ''
+  state.skillsLoading = true
+  try {
+    state.skills = await api.applySkillAction({ op: 'set_enabled', id, enabled })
+    if (state.skills.error) state.skillsFeedback = state.skills.error
+  } catch (error) {
+    state.skillsFeedback = (error as Error).message
+  } finally {
+    state.skillsLoading = false
+  }
+}
+
+async function removeSkill(id: string) {
+  state.skillsFeedback = ''
+  state.skillsLoading = true
+  try {
+    state.skills = await api.applySkillAction({ op: 'remove', id })
+    if (state.skills.error) state.skillsFeedback = state.skills.error
+  } catch (error) {
+    state.skillsFeedback = (error as Error).message
+  } finally {
+    state.skillsLoading = false
+  }
+}
+
 function applyTheme() {
   document.documentElement.dataset.theme = state.theme
 }
@@ -323,9 +433,12 @@ function loadTheme() {
   applyTheme()
 }
 
-function setDrawer(open: boolean) {
+async function setDrawer(open: boolean) {
   state.drawerOpen = open
-  if (open) refreshAll()
+  if (open) {
+    await refreshAll()
+    await refreshSkills()
+  }
 }
 
 async function init() {
@@ -334,16 +447,22 @@ async function init() {
   loadSessions()
   if (state.sessions.length === 0) createSession()
   await refreshAll()
+  await refreshSkills()
 }
 
 export const store = {
   state,
   init,
   refreshAll,
+  refreshSkills,
+  requestSkillsRefresh,
+  toggleSkill,
+  removeSkill,
   newChat,
   selectSession,
   deleteSession,
   sendMessage,
+  retryMessage,
   stop,
   applyLoad,
   setTool,
@@ -355,4 +474,4 @@ export const store = {
   preferredModel,
 }
 
-export type { BackendState, ChatMessage, ModelInfo, RuntimeMode, Session }
+export type { BackendState, ChatMessage, ModelInfo, RuntimeMode, Session, SkillsState }

@@ -34,6 +34,8 @@ class AcpRuntime : public QObject
     QJsonObject healthPayload() const;
     QJsonObject modelsPayload() const;
     QJsonObject backendStatePayload() const;
+    QJsonObject skillsPayload(QString *errorMessage = nullptr);
+    bool applySkillAction(const QJsonObject &request, QJsonObject *payload, QString *errorMessage);
     bool loadBackend(const QJsonObject &request, QString *errorMessage);
     bool setCapabilities(const QJsonObject &request, QString *errorMessage);
     bool linkModeEnabled() const;
