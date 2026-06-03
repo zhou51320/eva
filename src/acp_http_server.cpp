@@ -447,7 +447,9 @@ void AcpHttpServer::proxyChatCompletions(QTcpSocket *socket,
             {
                 if (!socket || chunkText.isEmpty()) return;
                 QJsonObject delta;
-                if (role == QStringLiteral("think"))
+                if (role == QStringLiteral("tool"))
+                    delta.insert(QStringLiteral("eva_tool"), chunkText);
+                else if (role == QStringLiteral("think"))
                     delta.insert(QStringLiteral("reasoning"), chunkText);
                 else
                     delta.insert(QStringLiteral("content"), chunkText);
@@ -480,6 +482,27 @@ void AcpHttpServer::proxyChatCompletions(QTcpSocket *socket,
             socket->disconnectFromHost();
             return;
         }
+        // Authoritative final content/reasoning so the WebUI reconciles its
+        // best-effort incremental deltas to the clean answer.
+        const QJsonObject finalMsg = response.value(QStringLiteral("choices")).toArray().at(0).toObject().value(QStringLiteral("message")).toObject();
+        QJsonObject evaFinal;
+        evaFinal.insert(QStringLiteral("content"), finalMsg.value(QStringLiteral("content")).toString());
+        if (finalMsg.contains(QStringLiteral("reasoning")))
+            evaFinal.insert(QStringLiteral("reasoning"), finalMsg.value(QStringLiteral("reasoning")).toString());
+        QJsonObject finalChoice;
+        finalChoice.insert(QStringLiteral("index"), 0);
+        finalChoice.insert(QStringLiteral("delta"), QJsonObject());
+        finalChoice.insert(QStringLiteral("finish_reason"), QStringLiteral("stop"));
+        QJsonArray finalChoices;
+        finalChoices.append(finalChoice);
+        QJsonObject finalChunk;
+        finalChunk.insert(QStringLiteral("object"), QStringLiteral("chat.completion.chunk"));
+        finalChunk.insert(QStringLiteral("choices"), finalChoices);
+        finalChunk.insert(QStringLiteral("eva_final"), evaFinal);
+        socket->write("data: ");
+        socket->write(QJsonDocument(finalChunk).toJson(QJsonDocument::Compact));
+        socket->write("\n\n");
+        socket->flush();
         socket->write("data: [DONE]\n\n");
         socket->disconnectFromHost();
         return;

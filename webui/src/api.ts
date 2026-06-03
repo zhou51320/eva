@@ -63,6 +63,7 @@ export interface ChatDelta {
 
 export interface ChatStreamCallbacks {
   onDelta: (delta: ChatDelta) => void
+  onToolStep?: (tool: string) => void
   signal?: AbortSignal
 }
 
@@ -129,7 +130,18 @@ export async function sendChat(
       if (!chunk || chunk === '[DONE]') continue
       const data = JSON.parse(chunk)
       if (data.error) throw new Error(String(data.error))
+      // Authoritative reconciliation: replace accumulated content/reasoning.
+      if (data.eva_final) {
+        if (typeof data.eva_final.content === 'string') content = data.eva_final.content
+        if (typeof data.eva_final.reasoning === 'string') reasoning = data.eva_final.reasoning
+        callbacks.onDelta({ content, reasoning })
+        continue
+      }
       const delta = data.choices?.[0]?.delta || {}
+      if (typeof delta.eva_tool === 'string') {
+        callbacks.onToolStep?.(delta.eva_tool)
+        continue
+      }
       if (typeof delta.content === 'string') content += delta.content
       if (typeof delta.reasoning === 'string') reasoning += delta.reasoning
       if (typeof delta.reasoning_content === 'string') reasoning += delta.reasoning_content

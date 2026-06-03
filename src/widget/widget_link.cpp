@@ -8,6 +8,7 @@
 #include <QDateTime>
 #include <QDir>
 #include <QDirIterator>
+#include <QFile>
 #include <QUrl>
 #include <QHostInfo>
 #include <QFileInfo>
@@ -154,6 +155,42 @@ QJsonObject widgetCapabilityPayload(const QString &configPath,
     payload.insert(QStringLiteral("tts"), tts);
     payload.insert(QStringLiteral("tts_related_output"), tts.value(QStringLiteral("model_configured")).toBool() || tts.value(QStringLiteral("program_available")).toBool());
     return payload;
+}
+
+// Decode OpenAI image_url data URLs into temp files under EVA_TEMP so the desktop
+// input box (which works with file paths) can attach them for a bridge turn.
+QStringList decodeImageDataUrls(const QJsonArray &images, const QString &appDir)
+{
+    static int counter = 0; // bridge commands run on the GUI thread; no concurrency
+    QStringList paths;
+    const QString dir = QDir(appDir).filePath(QStringLiteral("EVA_TEMP/acp_web_uploads"));
+    QDir().mkpath(dir);
+    for (const QJsonValue &value : images)
+    {
+        const QString url = value.toString();
+        const int comma = url.indexOf(QLatin1Char(','));
+        if (comma < 0) continue;
+        const QString meta = url.left(comma);
+        if (!meta.contains(QStringLiteral("base64"), Qt::CaseInsensitive)) continue;
+        const QByteArray bytes = QByteArray::fromBase64(url.mid(comma + 1).toUtf8());
+        if (bytes.isEmpty()) continue;
+        QString ext = QStringLiteral("png");
+        if (meta.contains(QStringLiteral("jpeg")) || meta.contains(QStringLiteral("jpg"))) ext = QStringLiteral("jpg");
+        else if (meta.contains(QStringLiteral("webp"))) ext = QStringLiteral("webp");
+        else if (meta.contains(QStringLiteral("gif"))) ext = QStringLiteral("gif");
+        const QString path = QDir(dir).filePath(QStringLiteral("img_%1_%2.%3")
+                                                     .arg(QDateTime::currentMSecsSinceEpoch())
+                                                     .arg(++counter)
+                                                     .arg(ext));
+        QFile file(path);
+        if (file.open(QIODevice::WriteOnly))
+        {
+            file.write(bytes);
+            file.close();
+            paths.append(path);
+        }
+    }
+    return paths;
 }
 } // namespace
 
@@ -1169,14 +1206,14 @@ bool Widget::resetAcpBridgeConversation(QString *errorMessage)
     return true;
 }
 
-bool Widget::sendBridgeText(const QString &text, QString *errorMessage)
+bool Widget::sendBridgeText(const QString &text, const QStringList &imagePaths, QString *errorMessage)
 {
     if (runtimeBusyForUi())
     {
         if (errorMessage) *errorMessage = jtr("control command blocked");
         return false;
     }
-    if (text.trimmed().isEmpty())
+    if (text.trimmed().isEmpty() && imagePaths.isEmpty())
     {
         if (errorMessage) *errorMessage = jtr("control send missing");
         return false;
@@ -1199,6 +1236,7 @@ bool Widget::sendBridgeText(const QString &text, QString *errorMessage)
     {
         ui->input->textEdit->setPlainText(text);
         ui->input->clearThumbnails();
+        if (!imagePaths.isEmpty()) ui->input->addFiles(imagePaths);
         on_send_clicked();
         if (!backup.text.isEmpty() || !backup.attachments.isEmpty())
         {
@@ -1293,7 +1331,8 @@ void Widget::handleAcpBridgeCommand(const QJsonObject &payload)
     if (name == QStringLiteral("bridge_send"))
     {
         QString errorMessage;
-        const bool ok = sendBridgeText(payload.value(QStringLiteral("text")).toString(), &errorMessage);
+        const QStringList imagePaths = decodeImageDataUrls(payload.value(QStringLiteral("images")).toArray(), applicationDirPath);
+        const bool ok = sendBridgeText(payload.value(QStringLiteral("text")).toString(), imagePaths, &errorMessage);
         response.insert(QStringLiteral("ok"), ok);
         if (ok)
         {
@@ -1776,7 +1815,7 @@ void Widget::handleControlHostCommand(const QJsonObject &payload)
     if (name == QStringLiteral("send"))
     {
         QString errorMessage;
-        if (!sendBridgeText(payload.value(QStringLiteral("text")).toString(), &errorMessage))
+        if (!sendBridgeText(payload.value(QStringLiteral("text")).toString(), QStringList(), &errorMessage))
         {
             QJsonObject warn;
             warn.insert(QStringLiteral("type"), QStringLiteral("state_log"));

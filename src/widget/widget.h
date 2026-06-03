@@ -1159,7 +1159,7 @@ class Widget : public QWidget, public SessionHostPort, public ToolFlowHostPort
     bool applyAcpBridgeLoad(const QJsonObject &payload, QString *errorMessage);
     bool applyBridgeCapabilities(const QJsonObject &payload, QString *errorMessage);
     bool resetAcpBridgeConversation(QString *errorMessage);
-    bool sendBridgeText(const QString &text, QString *errorMessage);
+    bool sendBridgeText(const QString &text, const QStringList &imagePaths, QString *errorMessage);
     void sendToRemotePeers(const QJsonObject &payload);
     void applyControlSnapshot(const QJsonObject &snap);
     void broadcastControlSnapshot();

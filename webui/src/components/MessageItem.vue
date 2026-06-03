@@ -81,6 +81,13 @@ function onBodyClick(event: MouseEvent) {
           <div class="reasoning__body">{{ message.reasoning }}</div>
         </details>
 
+        <div v-if="message.toolSteps && message.toolSteps.length" class="tools">
+          <span v-for="(t, i) in message.toolSteps" :key="i" class="tool-chip">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4l-6 6a1.5 1.5 0 0 0 2 2l6-6a4 4 0 0 0 5.4-5.4l-2.3 2.3-2-2 2.3-2.3z" /></svg>
+            {{ t }}
+          </span>
+        </div>
+
         <div
           v-if="message.content"
           class="md body"
@@ -171,6 +178,24 @@ function onBodyClick(event: MouseEvent) {
 }
 .body--err {
   color: var(--danger);
+}
+
+.tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.tool-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-muted);
 }
 
 .reasoning {

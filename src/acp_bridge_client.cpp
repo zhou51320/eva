@@ -139,10 +139,11 @@ bool AcpBridgeClient::stopRuntime(QString *errorMessage, int timeoutMs)
 
 bool AcpBridgeClient::sendText(const QString &text, ChatResult *result, QString *errorMessage, int timeoutMs)
 {
-    return sendTextStreaming(text, std::function<void(const QString &, const QString &)>(), result, errorMessage, timeoutMs);
+    return sendTextStreaming(text, QStringList(), std::function<void(const QString &, const QString &)>(), result, errorMessage, timeoutMs);
 }
 
 bool AcpBridgeClient::sendTextStreaming(const QString &text,
+                                       const QStringList &imageUrls,
                                        const std::function<void(const QString &role, const QString &chunk)> &onChunk,
                                        ChatResult *result,
                                        QString *errorMessage,
@@ -167,15 +168,26 @@ bool AcpBridgeClient::sendTextStreaming(const QString &text,
         chunkConn = connect(channel_, &ControlChannel::controllerEventArrived, this, [this, onChunk](const QJsonObject &payload)
         {
             if (!chatWaiting_) return;
-            if (payload.value(QStringLiteral("type")).toString() != QStringLiteral("output")) return;
-            const QString role = payload.value(QStringLiteral("role")).toString();
-            const QString textChunk = payload.value(QStringLiteral("text")).toString();
-            if (!textChunk.isEmpty()) onChunk(role, textChunk);
+            const QString type = payload.value(QStringLiteral("type")).toString();
+            if (type == QStringLiteral("output"))
+            {
+                const QString role = payload.value(QStringLiteral("role")).toString();
+                const QString textChunk = payload.value(QStringLiteral("text")).toString();
+                if (!textChunk.isEmpty()) onChunk(role, textChunk);
+            }
+            else if (type == QStringLiteral("record_add"))
+            {
+                // A tool record was created in the main EVA — surface it as a tool step.
+                // Skip "answer", which is EVA's reply mechanism, not a tool to visualize.
+                const QString tool = payload.value(QStringLiteral("tool")).toString();
+                if (!tool.isEmpty() && tool != QStringLiteral("answer")) onChunk(QStringLiteral("tool"), tool);
+            }
         });
     }
 
     QJsonObject payload;
     payload.insert(QStringLiteral("text"), text);
+    if (!imageUrls.isEmpty()) payload.insert(QStringLiteral("images"), QJsonArray::fromStringList(imageUrls));
     const QJsonObject sendResponse = request(QStringLiteral("bridge_send"), payload, errorMessage, 3000);
     if (sendResponse.isEmpty())
     {

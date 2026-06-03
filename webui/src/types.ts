@@ -8,6 +8,8 @@ export interface ChatMessage {
   /** Attached image data URLs (user messages only). */
   images?: string[]
   reasoning?: string
+  /** Tool steps surfaced during the turn (e.g. tool names invoked by EVA). */
+  toolSteps?: string[]
   /** Short status line shown under the message (e.g. "完成", "流式输出", "错误"). */
   meta?: string
   /** True while the assistant message is still being streamed. */

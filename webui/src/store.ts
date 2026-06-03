@@ -229,6 +229,10 @@ async function sendMessage(text: string, images: string[], stream: boolean) {
         assistant.reasoning = reasoning
         assistant.meta = reasoning ? '流式输出 · 含思考' : '流式输出'
       },
+      onToolStep: (tool) => {
+        if (!assistant.toolSteps) assistant.toolSteps = []
+        assistant.toolSteps.push(tool)
+      },
     })
     assistant.pending = false
     assistant.meta = assistant.content ? '完成' : '完成 · 空响应'

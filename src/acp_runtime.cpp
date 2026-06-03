@@ -7,9 +7,11 @@
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QSettings>
+#include <QStringList>
 #include <QTimer>
 #include <QUrl>
 #include <algorithm>
+#include <memory>
 
 #include "app/config_migrator.h"
 #include "app/default_model_finder.h"
@@ -962,6 +964,53 @@ QString cleanBridgeAnswerText(const QString &raw)
     }
     return raw;
 }
+
+// Incrementally decode the `answer` tool content from a partial assistant stream.
+// Returns the content decoded so far (handles partial JSON-string escapes by stopping
+// at an incomplete escape), or empty if the content value has not started yet.
+QString extractAnswerContentPartial(const QString &accum)
+{
+    int k = accum.indexOf(QStringLiteral("\"content\""));
+    if (k < 0) return QString();
+    int colon = accum.indexOf(QLatin1Char(':'), k + 9);
+    if (colon < 0) return QString();
+    int q = accum.indexOf(QLatin1Char('"'), colon + 1);
+    if (q < 0) return QString();
+    QString out;
+    int i = q + 1;
+    while (i < accum.size())
+    {
+        const QChar c = accum.at(i);
+        if (c == QLatin1Char('\\'))
+        {
+            if (i + 1 >= accum.size()) break; // incomplete escape: wait for more
+            const QChar n = accum.at(i + 1);
+            if (n == QLatin1Char('n')) out += QLatin1Char('\n');
+            else if (n == QLatin1Char('t')) out += QLatin1Char('\t');
+            else if (n == QLatin1Char('r')) out += QLatin1Char('\r');
+            else if (n == QLatin1Char('u'))
+            {
+                if (i + 5 >= accum.size()) break; // incomplete \uXXXX: wait
+                bool ok = false;
+                const ushort code = accum.mid(i + 2, 4).toUShort(&ok, 16);
+                if (ok) out += QChar(code);
+                i += 4;
+            }
+            else out += n; // ", \\, /, etc.
+            i += 2;
+        }
+        else if (c == QLatin1Char('"'))
+        {
+            break; // end of content value
+        }
+        else
+        {
+            out += c;
+            ++i;
+        }
+    }
+    return out;
+}
 } // namespace
 
 QJsonObject AcpRuntime::streamChatCompletion(const QJsonObject &request,
@@ -971,39 +1020,90 @@ QJsonObject AcpRuntime::streamChatCompletion(const QJsonObject &request,
     if (bridgeModeEnabled() && bridgeClient_)
     {
         QString text;
+        QStringList imageUrls;
         const QJsonArray messages = request.value(QStringLiteral("messages")).toArray();
         for (int i = messages.size() - 1; i >= 0; --i)
         {
             const QJsonObject message = messages.at(i).toObject();
-            if (message.value(QStringLiteral("role")).toString() == QStringLiteral("user"))
+            if (message.value(QStringLiteral("role")).toString() != QStringLiteral("user")) continue;
+            const QJsonValue contentVal = message.value(QStringLiteral("content"));
+            if (contentVal.isString())
             {
-                text = message.value(QStringLiteral("content")).toString();
-                if (!text.isEmpty()) break;
+                text = contentVal.toString();
             }
+            else if (contentVal.isArray())
+            {
+                // OpenAI multimodal content: collect text parts + image_url data URLs.
+                for (const QJsonValue &partVal : contentVal.toArray())
+                {
+                    const QJsonObject part = partVal.toObject();
+                    const QString ptype = part.value(QStringLiteral("type")).toString();
+                    if (ptype == QStringLiteral("text"))
+                        text += part.value(QStringLiteral("text")).toString();
+                    else if (ptype == QStringLiteral("image_url"))
+                    {
+                        const QString url = part.value(QStringLiteral("image_url")).toObject().value(QStringLiteral("url")).toString();
+                        if (!url.isEmpty()) imageUrls.append(url);
+                    }
+                }
+            }
+            if (!text.trimmed().isEmpty() || !imageUrls.isEmpty()) break;
         }
-        if (text.trimmed().isEmpty())
+        if (text.trimmed().isEmpty() && imageUrls.isEmpty())
         {
-            if (errorMessage) *errorMessage = QStringLiteral("Bridge mode currently requires the latest user text.");
+            if (errorMessage) *errorMessage = QStringLiteral("Bridge mode currently requires the latest user message.");
             return QJsonObject();
         }
 
         AcpBridgeClient::ChatResult result;
-        // Stream only reasoning ("think") live; suppress the raw EVA output panel
-        // (user echo, role labels, raw <tool_call> JSON). Emit one clean answer at end.
-        std::function<void(const QString &, const QString &)> streamThink;
+        // Stream reasoning ("think") and tool steps live; for the answer ("assistant"),
+        // incrementally decode the clean `answer` content so it streams token by token
+        // without the raw <tool_call> wrapper or role labels. The authoritative final
+        // content is reconciled by the caller via eva_final.
+        struct StreamState
+        {
+            QString accum;
+            int emitted = 0;
+            int mode = 0; // 0=undecided, 1=tool_call answer, 2=plain text
+        };
+        auto st = std::make_shared<StreamState>();
+        std::function<void(const QString &, const QString &)> wrapped;
         if (onChunk)
         {
-            streamThink = [onChunk](const QString &role, const QString &chunk)
+            wrapped = [onChunk, st](const QString &role, const QString &chunk)
             {
-                if (role == QStringLiteral("think")) onChunk(role, chunk);
+                if (role == QStringLiteral("think") || role == QStringLiteral("tool"))
+                {
+                    onChunk(role, chunk);
+                    return;
+                }
+                if (role != QStringLiteral("assistant")) return; // drop user echo / labels / splitters
+                st->accum += chunk;
+                if (st->mode == 0)
+                {
+                    if (st->accum.contains(QStringLiteral("<tool_call>"))) st->mode = 1;
+                    else
+                    {
+                        const QString trimmed = st->accum.trimmed();
+                        if (!trimmed.isEmpty() && trimmed.at(0) != QLatin1Char('<')) st->mode = 2;
+                    }
+                }
+                QString visible;
+                if (st->mode == 1) visible = extractAnswerContentPartial(st->accum);
+                else if (st->mode == 2) visible = st->accum;
+                else return; // undecided (could be a forming "<tool_call>")
+                if (visible.size() > st->emitted)
+                {
+                    onChunk(QStringLiteral("assistant"), visible.mid(st->emitted));
+                    st->emitted = visible.size();
+                }
             };
         }
-        if (!bridgeClient_->sendTextStreaming(text, streamThink, &result, errorMessage))
+        if (!bridgeClient_->sendTextStreaming(text, imageUrls, wrapped, &result, errorMessage))
         {
             return QJsonObject();
         }
         const QString cleanAnswer = cleanBridgeAnswerText(result.assistantText);
-        if (onChunk && !cleanAnswer.isEmpty()) onChunk(QStringLiteral("assistant"), cleanAnswer);
 
         QString stateError;
         const QJsonObject liveState = bridgeClient_->getState(&stateError, 1500);
