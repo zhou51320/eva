@@ -283,7 +283,7 @@ QJsonObject AcpRuntime::backendStatePayload() const
     const bool bridgeAvailable = bridgeModeEnabled();
     if (bridgeAvailable)
     {
-        QJsonObject bridgeState = bridgeClient_->getState(&bridgeError);
+        QJsonObject bridgeState = bridgeClient_->getState(&bridgeError, 3000);
         if (!bridgeState.isEmpty())
         {
             bridgeState.insert(QStringLiteral("chat_route"), QStringLiteral("eva_bridge"));

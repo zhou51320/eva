@@ -610,7 +610,7 @@ void Widget::reflash_output_tool_highlight(const QString &result, const QColor &
     {
         ui->output->verticalScrollBar()->setValue(ui->output->verticalScrollBar()->maximum());
     }
-    if (isHostControlled())
+    if (isHostControlled() || acpBridgeConnected_)
     {
         broadcastControlOutput(out, false, baseColor);
     }
@@ -921,7 +921,7 @@ void Widget::output_scroll(QString output, QColor color, bool isStream, const QS
     {
         ui->output->verticalScrollBar()->setValue(ui->output->verticalScrollBar()->maximum()); // 设置滚动条到最底端
     }
-    if (isHostControlled())
+    if (isHostControlled() || acpBridgeConnected_)
     {
         broadcastControlOutput(output, isStream, color, roleHint, thinkActiveFlag);
     }
@@ -1022,7 +1022,7 @@ void Widget::reflash_state(QString state_string, SIGNAL_STATE state)
             decode_finish();
         }
     }
-    if (isHostControlled())
+    if (isHostControlled() || acpBridgeConnected_)
     {
         broadcastControlState(state_string, state);
     }
