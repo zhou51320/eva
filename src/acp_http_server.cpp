@@ -466,6 +466,7 @@ void AcpHttpServer::proxyChatCompletions(QTcpSocket *socket,
                 socket->write("data: ");
                 socket->write(QJsonDocument(chunk).toJson(QJsonDocument::Compact));
                 socket->write("\n\n");
+                socket->flush();
             },
             &errorMessage);
         if (response.isEmpty())

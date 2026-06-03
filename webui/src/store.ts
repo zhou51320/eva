@@ -201,8 +201,11 @@ async function sendMessage(text: string, images: string[], stream: boolean) {
     meta: new Date().toLocaleTimeString(),
   })
   if (session.title === '新对话') session.title = (input || '图片消息').slice(0, 24)
-  const assistant: ChatMessage = { role: 'assistant', content: '', reasoning: '', pending: true, meta: '生成中…' }
-  session.messages.push(assistant)
+  const assistantDraft: ChatMessage = { role: 'assistant', content: '', reasoning: '', pending: true, meta: '生成中…' }
+  session.messages.push(assistantDraft)
+  // Mutate the reactive array element, NOT the raw pushed object — otherwise Vue
+  // does not track streaming deltas and the reply only appears after a reload.
+  const assistant = session.messages[session.messages.length - 1]
   persistSessions()
 
   state.streaming = true
