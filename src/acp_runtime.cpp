@@ -933,6 +933,37 @@ QJsonObject AcpRuntime::chatCompletion(const QJsonObject &request, QString *erro
     return streamChatCompletion(request, std::function<void(const QString &, const QString &)>(), errorMessage);
 }
 
+namespace
+{
+// Extract the clean answer from a bridge assistant text. EVA's `answer` tool wraps
+// the reply in <tool_call>{"name":"answer","arguments":{"content":"..."}}</tool_call>;
+// return that content when present, otherwise the text unchanged.
+QString cleanBridgeAnswerText(const QString &raw)
+{
+    const QString trimmed = raw.trimmed();
+    const QString openTag = QStringLiteral("<tool_call>");
+    const int tcStart = trimmed.indexOf(openTag);
+    if (tcStart >= 0)
+    {
+        const int jsonStart = tcStart + openTag.size();
+        const int tcEnd = trimmed.indexOf(QStringLiteral("</tool_call>"), jsonStart);
+        const QString jsonStr = (tcEnd >= 0 ? trimmed.mid(jsonStart, tcEnd - jsonStart) : trimmed.mid(jsonStart)).trimmed();
+        QJsonParseError parseError;
+        const QJsonDocument doc = QJsonDocument::fromJson(jsonStr.toUtf8(), &parseError);
+        if (parseError.error == QJsonParseError::NoError && doc.isObject())
+        {
+            const QJsonObject obj = doc.object();
+            if (obj.value(QStringLiteral("name")).toString() == QStringLiteral("answer"))
+            {
+                const QString content = obj.value(QStringLiteral("arguments")).toObject().value(QStringLiteral("content")).toString();
+                if (!content.isEmpty()) return content;
+            }
+        }
+    }
+    return raw;
+}
+} // namespace
+
 QJsonObject AcpRuntime::streamChatCompletion(const QJsonObject &request,
                                              const std::function<void(const QString &role, const QString &chunk)> &onChunk,
                                              QString *errorMessage)
@@ -957,10 +988,22 @@ QJsonObject AcpRuntime::streamChatCompletion(const QJsonObject &request,
         }
 
         AcpBridgeClient::ChatResult result;
-        if (!bridgeClient_->sendTextStreaming(text, onChunk, &result, errorMessage))
+        // Stream only reasoning ("think") live; suppress the raw EVA output panel
+        // (user echo, role labels, raw <tool_call> JSON). Emit one clean answer at end.
+        std::function<void(const QString &, const QString &)> streamThink;
+        if (onChunk)
+        {
+            streamThink = [onChunk](const QString &role, const QString &chunk)
+            {
+                if (role == QStringLiteral("think")) onChunk(role, chunk);
+            };
+        }
+        if (!bridgeClient_->sendTextStreaming(text, streamThink, &result, errorMessage))
         {
             return QJsonObject();
         }
+        const QString cleanAnswer = cleanBridgeAnswerText(result.assistantText);
+        if (onChunk && !cleanAnswer.isEmpty()) onChunk(QStringLiteral("assistant"), cleanAnswer);
 
         QString stateError;
         const QJsonObject liveState = bridgeClient_->getState(&stateError, 1500);
@@ -968,7 +1011,7 @@ QJsonObject AcpRuntime::streamChatCompletion(const QJsonObject &request,
 
         QJsonObject message;
         message.insert(QStringLiteral("role"), QStringLiteral("assistant"));
-        message.insert(QStringLiteral("content"), result.assistantText);
+        message.insert(QStringLiteral("content"), cleanAnswer);
         if (!result.reasoningText.isEmpty())
             message.insert(QStringLiteral("reasoning"), result.reasoningText);
 

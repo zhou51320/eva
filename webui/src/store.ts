@@ -124,19 +124,29 @@ function activeSession(): Session {
   return session
 }
 
+let refreshInFlight: Promise<void> | null = null
 async function refreshAll() {
-  try {
-    const [health, backend, models] = await Promise.all([
-      api.fetchHealth(),
-      api.fetchBackendState(),
-      api.fetchModels(),
-    ])
-    state.backend = { ...health, ...backend }
-    state.models = models
-    state.healthError = null
-  } catch (error) {
-    state.healthError = (error as Error).message
-  }
+  // Coalesce concurrent calls: overlapping refreshes would issue concurrent
+  // bridge commands over a shared channel and intermittently fail.
+  if (refreshInFlight) return refreshInFlight
+  refreshInFlight = (async () => {
+    try {
+      // Sequential, NOT Promise.all: in bridge mode each call issues a bridge
+      // command over a shared request channel; firing them concurrently causes
+      // re-entrant collisions that intermittently fail (status flips to error).
+      const health = await api.fetchHealth()
+      const backend = await api.fetchBackendState()
+      const models = await api.fetchModels()
+      state.backend = { ...health, ...backend }
+      state.models = models
+      state.healthError = null
+    } catch (error) {
+      state.healthError = (error as Error).message
+    } finally {
+      refreshInFlight = null
+    }
+  })()
+  return refreshInFlight
 }
 
 function createSession() {
