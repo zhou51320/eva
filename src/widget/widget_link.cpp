@@ -1127,6 +1127,36 @@ bool Widget::applyAcpBridgeLoad(const QJsonObject &payload, QString *errorMessag
     return true;
 }
 
+bool Widget::applyBridgeCapabilities(const QJsonObject &payload, QString *errorMessage)
+{
+    if (runtimeBusyForUi())
+    {
+        if (errorMessage) *errorMessage = jtr("control command blocked");
+        return false;
+    }
+    if (!date_ui)
+    {
+        if (errorMessage) *errorMessage = QStringLiteral("Tool settings UI is unavailable.");
+        return false;
+    }
+    // Drive the (persistent) tool checkboxes; stateChanged -> tool_change() recomputes
+    // is_load_tool and the tool system prompt. Then reuse the canonical "约定确定" path.
+    if (payload.contains(QStringLiteral("calculator")) && date_ui->calculator_checkbox)
+        date_ui->calculator_checkbox->setChecked(payload.value(QStringLiteral("calculator")).toBool());
+    if (payload.contains(QStringLiteral("engineer")) && date_ui->engineer_checkbox)
+        date_ui->engineer_checkbox->setChecked(payload.value(QStringLiteral("engineer")).toBool());
+    if (payload.contains(QStringLiteral("mcp")) && date_ui->MCPtools_checkbox)
+        date_ui->MCPtools_checkbox->setChecked(payload.value(QStringLiteral("mcp")).toBool());
+    if (payload.contains(QStringLiteral("knowledge")) && date_ui->knowledge_checkbox)
+        date_ui->knowledge_checkbox->setChecked(payload.value(QStringLiteral("knowledge")).toBool());
+    if (payload.contains(QStringLiteral("controller")) && date_ui->controller_checkbox)
+        date_ui->controller_checkbox->setChecked(payload.value(QStringLiteral("controller")).toBool());
+    if (payload.contains(QStringLiteral("stablediffusion")) && date_ui->stablediffusion_checkbox)
+        date_ui->stablediffusion_checkbox->setChecked(payload.value(QStringLiteral("stablediffusion")).toBool());
+    set_date(); // applies tool prompt merge, persists, and resets the conversation
+    return true;
+}
+
 bool Widget::resetAcpBridgeConversation(QString *errorMessage)
 {
     if (runtimeBusyForUi())
@@ -1264,6 +1294,25 @@ void Widget::handleAcpBridgeCommand(const QJsonObject &payload)
     {
         QString errorMessage;
         const bool ok = sendBridgeText(payload.value(QStringLiteral("text")).toString(), &errorMessage);
+        response.insert(QStringLiteral("ok"), ok);
+        if (ok)
+        {
+            response.insert(QStringLiteral("accepted"), true);
+            response.insert(QStringLiteral("state"), buildAcpBridgeState());
+        }
+        else
+        {
+            response.insert(QStringLiteral("error"), errorMessage);
+            response.insert(QStringLiteral("state"), buildAcpBridgeState());
+        }
+        sendAcpBridgeResponse(response);
+        return;
+    }
+
+    if (name == QStringLiteral("bridge_set_capabilities"))
+    {
+        QString errorMessage;
+        const bool ok = applyBridgeCapabilities(payload, &errorMessage);
         response.insert(QStringLiteral("ok"), ok);
         if (ok)
         {

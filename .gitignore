@@ -1,5 +1,7 @@
 build/
 build-static/
+webui/node_modules/
+webui/dist/
 .vscode/
 CMakeLists.txt.user
 src-old/
@@ -19,3 +21,4 @@ build32
 build_ninja
 build-*
 build_*
+.claude/

@@ -27,6 +27,7 @@ class AcpBridgeClient : public QObject
     QJsonObject getState(QString *errorMessage, int timeoutMs = 1500);
     QJsonArray listModels(QString *errorMessage, int timeoutMs = 1500);
     QJsonObject applyLoad(const QJsonObject &payload, QString *errorMessage, int timeoutMs = 3000);
+    QJsonObject setCapabilities(const QJsonObject &payload, QString *errorMessage, int timeoutMs = 5000);
     bool resetConversation(QString *errorMessage, int timeoutMs = 3000);
     bool stopRuntime(QString *errorMessage, int timeoutMs = 3000);
     bool sendText(const QString &text, ChatResult *result, QString *errorMessage, int timeoutMs = 600000);

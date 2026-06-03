@@ -231,6 +231,12 @@ add_executable(
     src/xnet.h)
 
 target_link_libraries(eva_acp PRIVATE Qt5::Core Qt5::Network Qt5::Gui qtmcp)
+# xtool.cpp uses X11/XTest (XFlush etc.) for input automation on non-Windows
+# builds; link X11 explicitly since eva_acp does not pull in the main target's
+# extra_LIBS. Windows builds guard this code out and need nothing here.
+if (UNIX AND NOT APPLE)
+    target_link_libraries(eva_acp PRIVATE X11::X11 X11::Xtst)
+endif()
 target_compile_features(eva_acp PRIVATE cxx_std_17)
 target_include_directories(eva_acp PRIVATE
     ${CMAKE_BINARY_DIR}/src/utils

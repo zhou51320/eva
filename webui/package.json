@@ -1,0 +1,24 @@
+{
+  "name": "eva-acp-webui",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "EVA ACP web console (Vite + Vue, built into a single self-contained index.html)",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "highlight.js": "^11.10.0",
+    "markdown-it": "^14.1.0",
+    "vue": "^3.5.13"
+  },
+  "devDependencies": {
+    "@types/markdown-it": "^14.1.2",
+    "@vitejs/plugin-vue": "^5.2.1",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11",
+    "vite-plugin-singlefile": "^2.1.0"
+  }
+}

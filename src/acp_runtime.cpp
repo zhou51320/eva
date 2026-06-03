@@ -873,6 +873,24 @@ QString AcpRuntime::configuredApiModel() const
     return isLinkMode() ? apis_.api_model : QString();
 }
 
+bool AcpRuntime::setCapabilities(const QJsonObject &request, QString *errorMessage)
+{
+    if (bridgeModeEnabled() && bridgeClient_)
+    {
+        QString err;
+        bridgeClient_->setCapabilities(request, &err, 5000);
+        if (!err.isEmpty())
+        {
+            if (errorMessage) *errorMessage = err;
+            return false;
+        }
+        return true;
+    }
+    if (errorMessage)
+        *errorMessage = QStringLiteral("Capability toggle requires the main EVA bridge; the direct runtime does not host tool/knowledge/MCP execution yet.");
+    return false;
+}
+
 bool AcpRuntime::resetConversation(QString *errorMessage)
 {
     const bool bridgeAvailable = bridgeModeEnabled();
@@ -1014,7 +1032,7 @@ QJsonObject AcpRuntime::streamChatCompletion(const QJsonObject &request,
         command.endpoint.is_complete_state = false;
         command.endpoint.temp = static_cast<float>(request.value(QStringLiteral("temperature")).toDouble(settings.temp));
         command.endpoint.repeat = settings.repeat;
-        command.endpoint.top_k = settings.top_k;
+        command.endpoint.top_k = request.value(QStringLiteral("top_k")).toInt(settings.top_k);
         command.endpoint.top_p = request.value(QStringLiteral("top_p")).toDouble(settings.hid_top_p);
         command.endpoint.n_predict = request.value(QStringLiteral("max_completion_tokens")).toInt(settings.hid_npredict);
         if (command.endpoint.n_predict <= 0)

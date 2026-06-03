@@ -35,6 +35,7 @@ class AcpRuntime : public QObject
     QJsonObject modelsPayload() const;
     QJsonObject backendStatePayload() const;
     bool loadBackend(const QJsonObject &request, QString *errorMessage);
+    bool setCapabilities(const QJsonObject &request, QString *errorMessage);
     bool linkModeEnabled() const;
     bool bridgeModeEnabled() const;
     bool directRuntimeEnabled() const;

@@ -281,7 +281,47 @@ void AcpHttpServer::handleRequest(QTcpSocket *socket,
         return;
     }
 
-    if (path == QStringLiteral("/api/backend/load") || path == QStringLiteral("/api/runtime/reset") || path == QStringLiteral("/api/runtime/stop") || path == QStringLiteral("/v1/chat/completions") || path == QStringLiteral("/v1/models"))
+    if (method == QByteArrayLiteral("POST") && path == QStringLiteral("/api/runtime/tools"))
+    {
+        QJsonObject request;
+        if (!body.trimmed().isEmpty())
+        {
+            QJsonParseError parseError;
+            const QJsonDocument doc = QJsonDocument::fromJson(body, &parseError);
+            if (parseError.error != QJsonParseError::NoError || !doc.isObject())
+            {
+                QJsonObject payload;
+                payload.insert(QStringLiteral("error"), QStringLiteral("Invalid JSON body"));
+                payload.insert(QStringLiteral("details"), parseError.errorString());
+                writeJson(socket, 400, QByteArrayLiteral("Bad Request"), payload);
+                return;
+            }
+            request = doc.object();
+        }
+
+        QString errorMessage;
+        if (!runtime_->setCapabilities(request, &errorMessage))
+        {
+            QJsonObject payload;
+            payload.insert(QStringLiteral("ok"), false);
+            payload.insert(QStringLiteral("accepted"), false);
+            payload.insert(QStringLiteral("error"), errorMessage);
+            payload.insert(QStringLiteral("state"), runtime_->backendStatePayload());
+            const QString lc = errorMessage.toLower();
+            const bool needsBridge = lc.contains(QStringLiteral("bridge")) || lc.contains(QStringLiteral("require")) ||
+                                     lc.contains(QStringLiteral("blocked")) || lc.contains(QStringLiteral("busy"));
+            writeJson(socket, needsBridge ? 409 : 400, needsBridge ? QByteArrayLiteral("Conflict") : QByteArrayLiteral("Bad Request"), payload);
+            return;
+        }
+        QJsonObject payload;
+        payload.insert(QStringLiteral("ok"), true);
+        payload.insert(QStringLiteral("accepted"), true);
+        payload.insert(QStringLiteral("state"), runtime_->backendStatePayload());
+        writeJson(socket, 200, QByteArrayLiteral("OK"), payload);
+        return;
+    }
+
+    if (path == QStringLiteral("/api/backend/load") || path == QStringLiteral("/api/runtime/reset") || path == QStringLiteral("/api/runtime/stop") || path == QStringLiteral("/api/runtime/tools") || path == QStringLiteral("/v1/chat/completions") || path == QStringLiteral("/v1/models"))
     {
         QJsonObject payload;
         payload.insert(QStringLiteral("error"), QStringLiteral("Method not allowed"));
@@ -300,10 +340,6 @@ bool AcpHttpServer::tryServeStatic(QTcpSocket *socket, const QString &path)
     QString resourcePath;
     if (path == QStringLiteral("/") || path == QStringLiteral("/index.html"))
         resourcePath = QStringLiteral(":/acp-web/acp_web/index.html");
-    else if (path == QStringLiteral("/styles.css"))
-        resourcePath = QStringLiteral(":/acp-web/acp_web/styles.css");
-    else if (path == QStringLiteral("/app.js"))
-        resourcePath = QStringLiteral(":/acp-web/acp_web/app.js");
     else
         return false;
 
@@ -327,10 +363,6 @@ QByteArray AcpHttpServer::staticContent(const QString &resourcePath) const
     QString diskPath;
     if (resourcePath.endsWith(QStringLiteral("index.html")))
         diskPath = QDir(diskRoot).filePath(QStringLiteral("index.html"));
-    else if (resourcePath.endsWith(QStringLiteral("styles.css")))
-        diskPath = QDir(diskRoot).filePath(QStringLiteral("styles.css"));
-    else if (resourcePath.endsWith(QStringLiteral("app.js")))
-        diskPath = QDir(diskRoot).filePath(QStringLiteral("app.js"));
 
     if (!diskPath.isEmpty() && QFileInfo::exists(diskPath))
     {

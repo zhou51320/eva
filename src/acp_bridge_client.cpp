@@ -121,6 +121,12 @@ QJsonObject AcpBridgeClient::applyLoad(const QJsonObject &payload, QString *erro
     return response.value(QStringLiteral("state")).toObject();
 }
 
+QJsonObject AcpBridgeClient::setCapabilities(const QJsonObject &payload, QString *errorMessage, int timeoutMs)
+{
+    QJsonObject response = request(QStringLiteral("bridge_set_capabilities"), payload, errorMessage, timeoutMs);
+    return response.value(QStringLiteral("state")).toObject();
+}
+
 bool AcpBridgeClient::resetConversation(QString *errorMessage, int timeoutMs)
 {
     return !request(QStringLiteral("bridge_reset"), QJsonObject(), errorMessage, timeoutMs).isEmpty();
