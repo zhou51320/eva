@@ -53,3 +53,34 @@ endif()
 
 add_test(NAME tool_registry_tests COMMAND tool_registry_tests)
 set_tests_properties(tool_registry_tests PROPERTIES LABELS unit)
+
+
+add_executable(prompt_runtime_tests
+    prompt_runtime_tests.cpp
+    ${CMAKE_SOURCE_DIR}/src/prompt.cpp
+    ${CMAKE_SOURCE_DIR}/src/service/tools/tool_registry.cpp
+)
+target_link_libraries(prompt_runtime_tests PRIVATE
+    Qt5::Core
+    Qt5::Gui
+    eva_doctest
+)
+target_include_directories(prompt_runtime_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_BINARY_DIR}/src/utils
+    ${CMAKE_SOURCE_DIR}/thirdparty/nlohmann
+)
+target_compile_features(prompt_runtime_tests PRIVATE cxx_std_17)
+
+if (MINGW)
+    if (DEFINED EVA_COMPILE_OPTIONS)
+        target_compile_options(prompt_runtime_tests PRIVATE ${EVA_COMPILE_OPTIONS})
+    endif()
+    if (DEFINED EVA_LINK_OPTIONS)
+        target_link_options(prompt_runtime_tests PRIVATE ${EVA_LINK_OPTIONS})
+    endif()
+endif()
+
+add_test(NAME prompt_runtime_tests COMMAND prompt_runtime_tests)
+set_tests_properties(prompt_runtime_tests PROPERTIES LABELS unit)

@@ -28,7 +28,11 @@ enum PromptEntryId : int
     PROMPT_TOOL_ENGINEER_PROXY = 51014,
     PROMPT_TOOL_MONITOR = 51015,
     PROMPT_TOOL_SKILL_CALL = 51016,
-    PROMPT_TOOL_SCHEDULE_TASK = 51017
+    PROMPT_TOOL_SCHEDULE_TASK = 51017,
+    PROMPT_TOOL_STAT_FILE = 51018,
+    PROMPT_TOOL_COPY_FILE = 51019,
+    PROMPT_TOOL_ARTIFACT_CONFIRM = 51020,
+    PROMPT_TOOL_SKILL_RUN = 51021
 };
 
 // Load prompt definitions (resourcePath ignored, kept for compatibility).
@@ -42,6 +46,7 @@ void setPromptLanguage(int languageFlag);
 const QString &extraPromptTemplate();
 const QString &systemPromptTemplate();
 const QString &wunderSystemPromptTemplate();
+const QString &agentRuntimeProtocol();
 const QString &engineerInfo();
 const QString &engineerSystemInfo();
 const QString &architectInfo();
@@ -64,5 +69,9 @@ const TOOLS_INFO &toolEditInFile();
 const TOOLS_INFO &toolEngineerProxy();
 const TOOLS_INFO &toolMonitor();
 const TOOLS_INFO &toolSkillCall();
+const TOOLS_INFO &toolSkillRun();
 const TOOLS_INFO &toolScheduleTask();
+const TOOLS_INFO &toolStatFile();
+const TOOLS_INFO &toolCopyFile();
+const TOOLS_INFO &toolArtifactConfirm();
 } // namespace promptx

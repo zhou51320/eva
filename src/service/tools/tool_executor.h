@@ -1,6 +1,7 @@
 #ifndef TOOL_EXECUTOR_H
 #define TOOL_EXECUTOR_H
 
+#include "runtime/runtime_events.h"
 #include "runtime/runtime_tool_driver.h"
 #include "xtool.h"
 
@@ -9,13 +10,17 @@ class ToolExecutor : public xTool, public RuntimeToolDriver
 {
     Q_OBJECT
   public:
-    explicit ToolExecutor(const QString &applicationDirPath = QStringLiteral("./"))
-        : xTool(applicationDirPath)
-    {
-    }
+    explicit ToolExecutor(const QString &applicationDirPath = QStringLiteral("./"));
 
     bool executeToolCall(const QJsonObject &call, quint64 turnId, QString *errorMessage = nullptr) override;
     void cancelActiveRuntimeTool() override;
+
+  signals:
+    void runtimeEventReady(const RuntimeEvent &event);
+
+  private:
+    RuntimeEvent eventFromProgressLine(const QString &line, SIGNAL_STATE state) const;
+    RuntimeEvent eventFromStateLine(const QString &line, SIGNAL_STATE state) const;
 };
 
 #endif // TOOL_EXECUTOR_H

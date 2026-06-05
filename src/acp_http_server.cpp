@@ -524,6 +524,12 @@ void AcpHttpServer::proxyChatCompletions(QTcpSocket *socket,
                 QJsonObject delta;
                 if (role == QStringLiteral("tool"))
                     delta.insert(QStringLiteral("eva_tool"), chunkText);
+                else if (role == QStringLiteral("event"))
+                {
+                    const QJsonDocument eventDoc = QJsonDocument::fromJson(chunkText.toUtf8());
+                    if (eventDoc.isObject()) delta.insert(QStringLiteral("eva_event"), eventDoc.object());
+                    else delta.insert(QStringLiteral("eva_tool"), chunkText);
+                }
                 else if (role == QStringLiteral("think"))
                     delta.insert(QStringLiteral("reasoning"), chunkText);
                 else

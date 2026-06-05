@@ -2,14 +2,123 @@
 
 export type ChatRole = 'user' | 'assistant' | 'system'
 
+export interface RuntimeArtifact {
+  path?: string
+  normalized_path?: string
+  label?: string
+  type?: string
+  extension?: string
+  size?: string | number
+  source_tool?: string
+  hints?: Record<string, string>
+  [key: string]: unknown
+}
+
+export interface RuntimeEvent {
+  type: string
+  role?: string
+  text?: string
+  name?: string
+  error?: string
+  payload?: {
+    summary?: string
+    artifacts?: RuntimeArtifact[]
+    envelope?: Record<string, unknown>
+    recovery_hints?: unknown[]
+    error?: Record<string, unknown>
+    [key: string]: unknown
+  }
+  [key: string]: unknown
+}
+
+export type ChatSegmentKind = 'thinking' | 'answer' | 'tool_call' | 'runtime_event' | 'artifact' | 'error'
+
+export interface ChatSegmentBase {
+  id: string
+  kind: ChatSegmentKind
+  active?: boolean
+  createdAt?: string
+}
+
+export interface TextChatSegment extends ChatSegmentBase {
+  kind: 'thinking' | 'answer'
+  text: string
+}
+
+export type ToolCallStatus = 'pending' | 'running' | 'completed' | 'failed' | 'warning' | 'interrupted'
+
+export interface ToolOutputTruncation {
+  truncated: boolean
+  omittedChars: number
+  limitChars: number
+}
+
+export interface ToolOutputChunk {
+  stream: string
+  text: string
+}
+
+export interface ToolCallSegment extends ChatSegmentBase {
+  kind: 'tool_call'
+  toolName: string
+  status: ToolCallStatus
+  callId?: string
+  summary?: string
+  command?: string
+  cwd?: string
+  outputs: ToolOutputChunk[]
+  outputTruncation?: Record<string, ToolOutputTruncation>
+  envelope?: Record<string, unknown>
+  result?: Record<string, unknown>
+  payload?: Record<string, unknown>
+  error?: string
+  recoveryHints?: unknown[]
+  artifacts?: RuntimeArtifact[]
+  events?: RuntimeEvent[]
+}
+
+export interface RuntimeEventSegment extends ChatSegmentBase {
+  kind: 'runtime_event'
+  eventType: string
+  label: string
+  summary: string
+  event?: RuntimeEvent
+  payload?: Record<string, unknown>
+}
+
+export interface ArtifactSegment extends ChatSegmentBase {
+  kind: 'artifact'
+  summary?: string
+  artifacts: RuntimeArtifact[]
+  event?: RuntimeEvent
+}
+
+export interface ErrorSegment extends ChatSegmentBase {
+  kind: 'error'
+  summary: string
+  details?: string
+  event?: RuntimeEvent
+  payload?: Record<string, unknown>
+}
+
+export type ChatSegment =
+  | TextChatSegment
+  | ToolCallSegment
+  | RuntimeEventSegment
+  | ArtifactSegment
+  | ErrorSegment
+
 export interface ChatMessage {
   role: ChatRole
   content: string
   /** Attached image data URLs (user messages only). */
   images?: string[]
   reasoning?: string
+  /** Ordered assistant turn timeline, built from the actual stream arrival order. */
+  segments?: ChatSegment[]
   /** Tool steps surfaced during the turn (e.g. tool names invoked by EVA). */
   toolSteps?: string[]
+  runtimeEvents?: RuntimeEvent[]
   /** Short status line shown under the message (e.g. "完成", "流式输出", "错误"). */
   meta?: string
   /** Final per-turn statistics shown in the assistant footer. */

@@ -15,14 +15,40 @@ function scrollToBottom() {
   el.scrollTop = el.scrollHeight
 }
 
+function isNearBottom(): boolean {
+  const el = scroller.value
+  if (!el) return true
+  return el.scrollHeight - el.scrollTop - el.clientHeight < 96
+}
+
 function retryAt(index: number) {
   store.retryMessage(index)
 }
 
+function segmentFingerprint(message: { segments?: unknown[]; content: string; reasoning?: string; pending?: boolean }): string {
+  const segmentText = (message.segments || []).map((segment) => {
+    const item = segment as {
+      kind?: string
+      text?: string
+      active?: boolean
+      outputs?: { text?: string }[]
+      status?: string
+      artifacts?: unknown[]
+    }
+    const outputLength = (item.outputs || []).reduce((sum, output) => sum + (output.text || '').length, 0)
+    return `${item.kind}:${item.text?.length || 0}:${outputLength}:${item.status || ''}:${item.artifacts?.length || 0}:${item.active ? 1 : 0}`
+  }).join(',')
+  return `${message.content.length}:${message.reasoning?.length || 0}:${message.pending ? 1 : 0}:${segmentText}`
+}
+
 // Follow the stream / new messages to the bottom.
 watch(
-  () => messages.value.map((m) => m.content).join('|') + messages.value.length,
-  () => nextTick(scrollToBottom),
+  () => messages.value.map(segmentFingerprint).join('|') + messages.value.length,
+  () => {
+    const stick = isNearBottom()
+    if (stick) nextTick(scrollToBottom)
+  },
+  { flush: 'pre' },
 )
 watch(() => s.activeSessionId, () => nextTick(scrollToBottom))
 </script>

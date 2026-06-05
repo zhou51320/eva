@@ -2,6 +2,8 @@ import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import { viteSingleFile } from 'vite-plugin-singlefile'
 
+declare const process: { env: Record<string, string | undefined> }
+
 // The ACP HTTP server (eva_acp) serves a single embedded index.html, so the whole
 // app is inlined into one file. Build target is kept low enough to run on the last
 // browsers available for Windows 7 (Chrome 109 / Firefox 115 ESR).

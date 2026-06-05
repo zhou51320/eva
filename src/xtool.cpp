@@ -1,16 +1,22 @@
 #include "xtool.h"
 
 #include "service/tools/tool_registry.h"
+#include "runtime/progress_events.h"
+#include "runtime/recovery_engine.h"
+#include "runtime/tool_result_envelope.h"
 #include "utils/eva_error.h"
 #include "utils/perf_metrics.h"
 #include "utils/processrunner.h"
 #include "utils/flowtracer.h"
 
+#include <QDateTime>
 #include <QDirIterator>
 #include <QEventLoop>
 #include <QHash>
+#include <QJsonDocument>
 #include <QPair>
 #include <QRegularExpression>
+#include <QSet>
 #include <QtConcurrent/QtConcurrentRun>
 #include <algorithm>
 #include <limits>
@@ -33,6 +39,253 @@ QString clampToolMessage(const QString &message)
     const double headKb = headBytes.size() / 1024.0;
     const double tailKb = tailBytes.size() / 1024.0;
     return head + "\n...\n" + tail + QString("\n[tool output truncated: %1 KB total, showing first %2 KB and last %3 KB]").arg(totalKb, 0, 'f', 1).arg(headKb, 0, 'f', 1).arg(tailKb, 0, 'f', 1);
+}
+
+QString makeToolObservationPayload(const QString &toolName, const QString &legacyText, bool ok = true, const QString &errorType = QString())
+{
+    return eva::runtime::makeLegacyToolResultEnvelopeString(toolName, legacyText, ok, errorType);
+}
+
+QString makeToolReturnMessage(const QString &toolName,
+                              const QString &returnLabel,
+                              const QString &legacyText,
+                              bool ok = true,
+                              const QString &errorType = QString())
+{
+    const QString label = returnLabel.trimmed().isEmpty() ? QStringLiteral("return") : returnLabel.trimmed();
+    return toolName + QLatin1Char(' ') + label + QLatin1Char('\n') +
+           makeToolObservationPayload(toolName, legacyText, ok, errorType);
+}
+
+
+QStringList stringListFromJsonArray(const mcp::json &args, const char *key)
+{
+    QStringList out;
+    if (!args.is_object() || !args.contains(key)) return out;
+    try
+    {
+        const auto &value = args.at(key);
+        if (value.is_array())
+        {
+            for (const auto &item : value)
+            {
+                if (item.is_string()) out << QString::fromStdString(item.get<std::string>()).trimmed();
+            }
+        }
+        else if (value.is_string())
+        {
+            out << QString::fromStdString(value.get<std::string>()).trimmed();
+        }
+    }
+    catch (...) {}
+    out.removeAll(QString());
+    return out;
+}
+
+QJsonObject jsonObjectFromMcpObject(const mcp::json &args, const char *key)
+{
+    QJsonObject out;
+    if (!args.is_object() || !args.contains(key)) return out;
+    try
+    {
+        const auto &value = args.at(key);
+        if (!value.is_object()) return out;
+        for (auto it = value.begin(); it != value.end(); ++it)
+        {
+            const QString name = QString::fromStdString(it.key());
+            if (it.value().is_string())
+                out.insert(name, QString::fromStdString(it.value().get<std::string>()));
+            else if (it.value().is_number_integer())
+                out.insert(name, static_cast<qint64>(it.value().get<long long>()));
+            else if (it.value().is_boolean())
+                out.insert(name, it.value().get<bool>());
+        }
+    }
+    catch (...) {}
+    return out;
+}
+
+QString makeCommandKey(const QString &command, const QString &cwd, const QString &shell, const QJsonObject &env)
+{
+    QStringList envParts;
+    const QStringList keys = env.keys();
+    for (const QString &key : keys)
+        envParts << key + QLatin1Char('=') + env.value(key).toVariant().toString();
+    envParts.sort();
+    return command.trimmed() + QStringLiteral("\n@@cwd=") + QDir::cleanPath(cwd) +
+           QStringLiteral("\n@@shell=") + shell.trimmed().toLower() +
+           QStringLiteral("\n@@env=") + envParts.join(QLatin1Char(';'));
+}
+
+QJsonArray commandRecoveryHints(const QString &type, const QJsonObject &details = QJsonObject{})
+{
+    return eva::runtime::recoveryHintsForFailure(type, details);
+}
+QJsonArray allowedRootsMetadata(const QString &workRoot, const QString &skillsRoot)
+{
+    QJsonArray roots;
+    auto add = [&roots](const QString &kind, const QString &path, bool writable) {
+        if (path.trimmed().isEmpty()) return;
+        QJsonObject item;
+        item.insert(QStringLiteral("kind"), kind);
+        item.insert(QStringLiteral("path"), QDir::toNativeSeparators(QDir::cleanPath(path)));
+        item.insert(QStringLiteral("writable"), writable);
+        roots.append(item);
+    };
+    add(QStringLiteral("workspace"), workRoot, true);
+    add(QStringLiteral("installed_skills"), skillsRoot, false);
+    add(QStringLiteral("temp_runs"), QDir(workRoot).filePath(QStringLiteral(".eva_runs")), true);
+    add(QStringLiteral("dependency_cache"), QDir(workRoot).filePath(QStringLiteral(".eva_cache")), true);
+    add(QStringLiteral("artifact_outputs"), QDir(workRoot).filePath(QStringLiteral("artifacts")), true);
+    return roots;
+}
+
+QJsonObject workspacePathMetadata(const QString &hostPath,
+                                  const QString &inputPath,
+                                  const QString &workRoot,
+                                  const QString &skillsRoot,
+                                  const QString &label = QString(),
+                                  const QString &sourceTool = QString())
+{
+    QFileInfo info(hostPath);
+    QJsonObject data;
+    data.insert(QStringLiteral("path"), inputPath.trimmed().isEmpty() ? hostPath : inputPath.trimmed());
+    data.insert(QStringLiteral("normalized_path"), QDir::toNativeSeparators(info.absoluteFilePath()));
+    data.insert(QStringLiteral("exists"), info.exists());
+    data.insert(QStringLiteral("is_symlink"), info.isSymLink());
+    data.insert(QStringLiteral("root"), QStringLiteral("workspace"));
+    if (!skillsRoot.trimmed().isEmpty())
+    {
+        const QString relToSkills = QDir(skillsRoot).relativeFilePath(info.absoluteFilePath());
+        if (!relToSkills.startsWith(QStringLiteral(".."))) data.insert(QStringLiteral("root"), QStringLiteral("skills"));
+    }
+    if (info.exists())
+    {
+        const QString type = info.isDir() ? QStringLiteral("directory") : QStringLiteral("file");
+        data.insert(QStringLiteral("type"), type);
+        data.insert(QStringLiteral("extension"), info.suffix());
+        data.insert(QStringLiteral("size"), QString::number(info.isDir() ? 0 : info.size()));
+        data.insert(QStringLiteral("modified_time"), info.lastModified().toUTC().toString(Qt::ISODate));
+    }
+    if (!label.trimmed().isEmpty()) data.insert(QStringLiteral("label"), label.trimmed());
+    if (!sourceTool.trimmed().isEmpty()) data.insert(QStringLiteral("source_tool"), sourceTool.trimmed());
+
+    QJsonObject hints;
+    hints.insert(QStringLiteral("open"), QDir::toNativeSeparators(info.absoluteFilePath()));
+    hints.insert(QStringLiteral("download"), QDir::toNativeSeparators(info.absoluteFilePath()));
+    hints.insert(QStringLiteral("inspect"), inputPath.trimmed().isEmpty() ? QDir(workRoot).relativeFilePath(info.absoluteFilePath()) : inputPath.trimmed());
+    data.insert(QStringLiteral("hints"), hints);
+    return data;
+}
+
+bool hostPathInsideRoot(const QString &hostPath, const QString &rootPath)
+{
+    QFileInfo info(hostPath);
+    QFileInfo rootInfo(rootPath);
+    QString abs = QDir::fromNativeSeparators(QDir::cleanPath(info.exists() ? info.canonicalFilePath() : info.absoluteFilePath()));
+    if (abs.isEmpty()) abs = QDir::fromNativeSeparators(QDir::cleanPath(info.absoluteFilePath()));
+    QString root = QDir::fromNativeSeparators(QDir::cleanPath(rootInfo.exists() ? rootInfo.canonicalFilePath() : rootInfo.absoluteFilePath()));
+    if (root.isEmpty()) root = QDir::fromNativeSeparators(QDir::cleanPath(rootInfo.absoluteFilePath()));
+#ifdef _WIN32
+    const Qt::CaseSensitivity cs = Qt::CaseInsensitive;
+#else
+    const Qt::CaseSensitivity cs = Qt::CaseSensitive;
+#endif
+    QString prefix = root;
+    if (!prefix.endsWith('/')) prefix += '/';
+    return abs.compare(root, cs) == 0 || abs.startsWith(prefix, cs);
+}
+
+bool copyPathRecursive(const QString &sourcePath, const QString &destinationPath, bool overwrite, QString *errorMessage)
+{
+    QFileInfo sourceInfo(sourcePath);
+    if (!sourceInfo.exists())
+    {
+        if (errorMessage) *errorMessage = QStringLiteral("Source path not found: %1").arg(sourcePath);
+        return false;
+    }
+    if (sourceInfo.isSymLink())
+    {
+        if (errorMessage) *errorMessage = QStringLiteral("Refusing to copy symbolic link: %1").arg(sourcePath);
+        return false;
+    }
+    if (sourceInfo.isDir())
+    {
+        QString sourceRoot = sourceInfo.canonicalFilePath();
+        if (sourceRoot.isEmpty()) sourceRoot = sourceInfo.absoluteFilePath();
+        sourceRoot = QDir::fromNativeSeparators(QDir::cleanPath(sourceRoot));
+        QString destinationAbs = QDir::fromNativeSeparators(QDir::cleanPath(QFileInfo(destinationPath).absoluteFilePath()));
+#ifdef _WIN32
+        const Qt::CaseSensitivity cs = Qt::CaseInsensitive;
+#else
+        const Qt::CaseSensitivity cs = Qt::CaseSensitive;
+#endif
+        QString prefix = sourceRoot;
+        if (!prefix.endsWith('/')) prefix += '/';
+        if (destinationAbs.compare(sourceRoot, cs) == 0 || destinationAbs.startsWith(prefix, cs))
+        {
+            if (errorMessage) *errorMessage = QStringLiteral("Refusing to copy a directory into itself: %1 -> %2").arg(sourcePath, destinationPath);
+            return false;
+        }
+    }
+
+    QFileInfo destinationInfo(destinationPath);
+    if (destinationInfo.exists())
+    {
+        if (!overwrite)
+        {
+            if (errorMessage) *errorMessage = QStringLiteral("Destination already exists: %1").arg(destinationPath);
+            return false;
+        }
+        if (destinationInfo.isDir())
+        {
+            QDir dir(destinationPath);
+            if (!dir.removeRecursively())
+            {
+                if (errorMessage) *errorMessage = QStringLiteral("Failed to remove existing directory: %1").arg(destinationPath);
+                return false;
+            }
+        }
+        else if (!QFile::remove(destinationPath))
+        {
+            if (errorMessage) *errorMessage = QStringLiteral("Failed to remove existing file: %1").arg(destinationPath);
+            return false;
+        }
+    }
+
+    if (sourceInfo.isDir())
+    {
+        if (!QDir().mkpath(destinationPath))
+        {
+            if (errorMessage) *errorMessage = QStringLiteral("Failed to create destination directory: %1").arg(destinationPath);
+            return false;
+        }
+        QDir sourceDir(sourcePath);
+        const QFileInfoList entries = sourceDir.entryInfoList(QDir::NoDotAndDotDot | QDir::AllEntries);
+        for (const QFileInfo &entry : entries)
+        {
+            if (entry.isSymLink())
+            {
+                if (errorMessage) *errorMessage = QStringLiteral("Refusing to copy symbolic link: %1").arg(entry.absoluteFilePath());
+                return false;
+            }
+            const QString childDestination = QDir(destinationPath).filePath(entry.fileName());
+            if (!copyPathRecursive(entry.absoluteFilePath(), childDestination, overwrite, errorMessage)) return false;
+        }
+        return true;
+    }
+
+    if (!QDir().mkpath(QFileInfo(destinationPath).absolutePath()))
+    {
+        if (errorMessage) *errorMessage = QStringLiteral("Failed to create destination parent: %1").arg(QFileInfo(destinationPath).absolutePath());
+        return false;
+    }
+    if (!QFile::copy(sourcePath, destinationPath))
+    {
+        if (errorMessage) *errorMessage = QStringLiteral("Failed to copy %1 to %2").arg(sourcePath, destinationPath);
+        return false;
+    }
+    return true;
 }
 
 struct MatchRange
@@ -122,7 +375,12 @@ struct SkillCallSpec
     QString skillFile;
     QString rootDir;
     QString skillContent;
+    QString frontmatterBody;
     QStringList tree;
+    QJsonObject metadata;
+    QJsonArray entrypointHints;
+    QJsonArray dependencyHints;
+    QJsonArray outputHints;
 };
 
 QString readTextFileUtf8(const QString &path, QString *errorMessage)
@@ -140,14 +398,257 @@ QString readTextFileUtf8(const QString &path, QString *errorMessage)
     return content;
 }
 
-bool parseSkillFrontmatter(const QString &content, QString &name, QString &description)
+bool parseSkillFrontmatter(const QString &content, QString &name, QString &description, QString *frontmatterOut = nullptr)
 {
     QString frontmatterBody;
     const QString frontmatter = normalizeFrontmatter(content, &frontmatterBody);
     if (frontmatter.isEmpty()) return false;
     name = extractYamlScalar(frontmatterBody, QStringLiteral("name")).trimmed();
     description = extractYamlScalar(frontmatterBody, QStringLiteral("description")).trimmed();
+    if (frontmatterOut) *frontmatterOut = frontmatterBody;
     return true;
+}
+
+QJsonArray stringsToJsonArray(const QStringList &items)
+{
+    QJsonArray array;
+    for (const QString &item : items)
+    {
+        const QString trimmed = item.trimmed();
+        if (!trimmed.isEmpty()) array.append(trimmed);
+    }
+    return array;
+}
+
+QStringList csvLikeFrontmatterList(const QString &raw)
+{
+    QString v = raw.trimmed();
+    if (v.startsWith(QLatin1Char('[')) && v.endsWith(QLatin1Char(']'))) v = v.mid(1, v.size() - 2);
+    QStringList parts = v.split(QRegularExpression(QStringLiteral(",|\n")), Qt::SkipEmptyParts);
+    for (QString &part : parts)
+    {
+        part = part.trimmed();
+        if ((part.startsWith('"') && part.endsWith('"')) || (part.startsWith(QLatin1Char('\'')) && part.endsWith(QLatin1Char('\''))))
+            part = part.mid(1, part.size() - 2).trimmed();
+        if (part.startsWith(QLatin1Char('-'))) part = part.mid(1).trimmed();
+    }
+    parts.removeAll(QString());
+    return parts;
+}
+
+QJsonObject skillMetadataFromFrontmatter(const QString &frontmatterBody)
+{
+    QJsonObject metadata;
+    metadata.insert(QStringLiteral("schema"), QStringLiteral("skill_frontmatter_v1"));
+    const QStringList scalarKeys = {QStringLiteral("name"), QStringLiteral("description"), QStringLiteral("license"), QStringLiteral("entrypoint"), QStringLiteral("command"), QStringLiteral("platforms")};
+    for (const QString &key : scalarKeys)
+    {
+        const QString value = extractYamlScalar(frontmatterBody, key).trimmed();
+        if (!value.isEmpty()) metadata.insert(key, value);
+    }
+    const QString command = metadata.value(QStringLiteral("command")).toString(metadata.value(QStringLiteral("entrypoint")).toString()).trimmed();
+    if (!command.isEmpty()) metadata.insert(QStringLiteral("entrypoint_command"), command);
+    for (const QString &key : {QStringLiteral("dependencies"), QStringLiteral("assets"), QStringLiteral("outputs"), QStringLiteral("examples")})
+    {
+        const QString value = extractYamlScalar(frontmatterBody, key).trimmed();
+        if (!value.isEmpty()) metadata.insert(key, stringsToJsonArray(csvLikeFrontmatterList(value)));
+    }
+    return metadata;
+}
+
+QJsonArray inferSkillEntrypoints(const QStringList &tree, const QJsonObject &metadata)
+{
+    QJsonArray hints;
+    const QString declared = metadata.value(QStringLiteral("entrypoint_command")).toString().trimmed();
+    if (!declared.isEmpty())
+    {
+        QJsonObject item;
+        item.insert(QStringLiteral("name"), QStringLiteral("run"));
+        item.insert(QStringLiteral("command"), declared);
+        item.insert(QStringLiteral("source"), QStringLiteral("frontmatter"));
+        hints.append(item);
+    }
+    for (const QString &path : tree)
+    {
+        const QString lower = path.toLower();
+        if (lower.endsWith('/')) continue;
+        QString command;
+        if (lower.endsWith(QStringLiteral(".py"))) command = QStringLiteral("python %1").arg(path);
+        else if (lower.endsWith(QStringLiteral(".js"))) command = QStringLiteral("node %1").arg(path);
+        else if (lower.endsWith(QStringLiteral(".sh"))) command = QStringLiteral("sh %1").arg(path);
+        else if (lower.endsWith(QStringLiteral(".bat")) || lower.endsWith(QStringLiteral(".cmd"))) command = path;
+        else if (lower == QStringLiteral("package.json")) command = QStringLiteral("npm install && npm run start");
+        if (command.isEmpty()) continue;
+        QJsonObject item;
+        item.insert(QStringLiteral("name"), QFileInfo(path).completeBaseName().isEmpty() ? QStringLiteral("run") : QFileInfo(path).completeBaseName());
+        item.insert(QStringLiteral("path"), path);
+        item.insert(QStringLiteral("command"), command);
+        item.insert(QStringLiteral("source"), QStringLiteral("inferred"));
+        hints.append(item);
+        if (hints.size() >= 8) break;
+    }
+    return hints;
+}
+
+QJsonArray inferDependencyHints(const QStringList &tree, const QJsonObject &metadata)
+{
+    QSet<QString> deps;
+    const QJsonArray declared = metadata.value(QStringLiteral("dependencies")).toArray();
+    for (const QJsonValue &v : declared) deps.insert(v.toString().trimmed());
+    for (const QString &path : tree)
+    {
+        const QString lower = path.toLower();
+        if (lower.endsWith(QStringLiteral(".py")) || lower == QStringLiteral("requirements.txt")) deps.insert(QStringLiteral("python/pip"));
+        if (lower.endsWith(QStringLiteral(".js")) || lower == QStringLiteral("package.json")) deps.insert(QStringLiteral("node/npm"));
+        if (lower.endsWith(QStringLiteral(".sh"))) deps.insert(QStringLiteral("posix shell"));
+    }
+    QStringList out = deps.values();
+    out.sort(Qt::CaseInsensitive);
+    return stringsToJsonArray(out);
+}
+
+QJsonArray inferOutputHints(const QJsonObject &metadata)
+{
+    const QJsonArray declared = metadata.value(QStringLiteral("outputs")).toArray();
+    if (!declared.isEmpty()) return declared;
+    QJsonArray fallback;
+    fallback.append(QStringLiteral("artifacts/"));
+    fallback.append(QStringLiteral("*.pptx"));
+    fallback.append(QStringLiteral("*.pdf"));
+    fallback.append(QStringLiteral("*.png"));
+    return fallback;
+}
+
+QString safeRunSegment(QString text)
+{
+    text = text.trimmed();
+    text.replace(QRegularExpression(QStringLiteral("[^A-Za-z0-9_.-]+")), QStringLiteral("-"));
+    text = text.trimmed();
+    if (text.isEmpty()) text = QStringLiteral("skill");
+    return text.left(64);
+}
+
+QString commandForSkillAction(const SkillCallSpec &spec, const QString &action)
+{
+    const QString wanted = action.trimmed();
+    for (const QJsonValue &value : spec.entrypointHints)
+    {
+        const QJsonObject item = value.toObject();
+        if (wanted.isEmpty() || wanted == QStringLiteral("run") || item.value(QStringLiteral("name")).toString().compare(wanted, Qt::CaseInsensitive) == 0)
+            return item.value(QStringLiteral("command")).toString().trimmed();
+    }
+    return {};
+}
+
+mcp::json qJsonObjectToMcpJson(const QJsonObject &object)
+{
+    QJsonParseError ignored{};
+    const QByteArray bytes = QJsonDocument(object).toJson(QJsonDocument::Compact);
+    Q_UNUSED(ignored);
+    try { return mcp::json::parse(bytes.constData()); } catch (...) { return mcp::json::object(); }
+}
+
+mcp::json qJsonArrayToMcpJson(const QJsonArray &array)
+{
+    const QByteArray bytes = QJsonDocument(array).toJson(QJsonDocument::Compact);
+    try { return mcp::json::parse(bytes.constData()); } catch (...) { return mcp::json::array(); }
+}
+
+QString shellQuotePath(const QString &path)
+{
+    QString p = QDir::fromNativeSeparators(path);
+    p.replace(QLatin1Char('\''), QStringLiteral("'\\''"));
+    return QStringLiteral("'%1'").arg(p);
+}
+
+QString localizedShellCommandForSkill(QString command)
+{
+    command = command.trimmed();
+    if (command.startsWith(QStringLiteral("python ")))
+        return QStringLiteral("python %1").arg(shellQuotePath(command.mid(7).trimmed()));
+    if (command.startsWith(QStringLiteral("node ")))
+        return QStringLiteral("node %1").arg(shellQuotePath(command.mid(5).trimmed()));
+    if (command.startsWith(QStringLiteral("sh ")))
+        return QStringLiteral("sh %1").arg(shellQuotePath(command.mid(3).trimmed()));
+    return command;
+}
+
+QJsonArray artifactSearchMatches(const QStringList &expectedOutputs, const QStringList &roots)
+{
+    QJsonArray matches;
+    QSet<QString> basenames;
+    for (const QString &expected : expectedOutputs)
+    {
+        const QString base = QFileInfo(expected).fileName();
+        if (!base.isEmpty()) basenames.insert(base);
+    }
+    if (basenames.isEmpty()) return matches;
+    for (const QString &root : roots)
+    {
+        QFileInfo rootInfo(root);
+        if (!rootInfo.exists() || !rootInfo.isDir()) continue;
+        int count = 0;
+        QDirIterator it(root, QDir::Files, QDirIterator::Subdirectories);
+        while (it.hasNext() && count < 32)
+        {
+            const QString path = it.next();
+            const QFileInfo info(path);
+            if (!basenames.contains(info.fileName())) continue;
+            QJsonObject item;
+            item.insert(QStringLiteral("path"), QDir::toNativeSeparators(info.absoluteFilePath()));
+            item.insert(QStringLiteral("size"), QString::number(info.size()));
+            item.insert(QStringLiteral("extension"), info.suffix());
+            matches.append(item);
+            ++count;
+        }
+    }
+    return matches;
+}
+
+QJsonArray confirmedArtifactsUnderRoots(const QStringList &roots, const QStringList &expectedOutputs)
+{
+    QJsonArray artifacts;
+    if (!expectedOutputs.isEmpty())
+    {
+        for (const QString &expected : expectedOutputs)
+        {
+            const QString normalizedExpected = QDir::fromNativeSeparators(expected.trimmed());
+            if (normalizedExpected.isEmpty()) continue;
+            for (const QString &root : roots)
+            {
+                QFileInfo rootInfo(root);
+                if (!rootInfo.exists() || !rootInfo.isDir()) continue;
+                const QString candidate = QDir::isAbsolutePath(normalizedExpected)
+                                              ? QDir::cleanPath(normalizedExpected)
+                                              : QDir(root).filePath(normalizedExpected);
+                if (QDir::isAbsolutePath(normalizedExpected) && !hostPathInsideRoot(candidate, root)) continue;
+                const QFileInfo info(candidate);
+                if (!info.exists() || !info.isFile()) continue;
+                artifacts.append(eva::runtime::makeArtifact(QDir::toNativeSeparators(info.absoluteFilePath()), info.size(), info.suffix(), expected));
+                break;
+            }
+        }
+        return artifacts;
+    }
+
+    QStringList suffixes;
+    suffixes << QStringLiteral("pptx") << QStringLiteral("pdf") << QStringLiteral("png") << QStringLiteral("jpg") << QStringLiteral("jpeg") << QStringLiteral("html") << QStringLiteral("md");
+    for (const QString &root : roots)
+    {
+        QFileInfo rootInfo(root);
+        if (!rootInfo.exists() || !rootInfo.isDir()) continue;
+        int count = 0;
+        QDirIterator it(root, QDir::Files, QDirIterator::Subdirectories);
+        while (it.hasNext() && count < 32)
+        {
+            const QString path = it.next();
+            const QFileInfo info(path);
+            if (!suffixes.contains(info.suffix().toLower())) continue;
+            artifacts.append(eva::runtime::makeArtifact(QDir::toNativeSeparators(info.absoluteFilePath()), info.size(), info.suffix(), info.fileName()));
+            ++count;
+        }
+    }
+    return artifacts;
 }
 
 void buildSkillTree(const QString &rootDir, QStringList &out)
@@ -207,7 +708,8 @@ bool resolveSkillCallSpec(const QString &skillsRoot, const QString &skillName, S
 
         QString skillDisplayName;
         QString skillDescription;
-        parseSkillFrontmatter(content, skillDisplayName, skillDescription);
+        QString frontmatterBody;
+        parseSkillFrontmatter(content, skillDisplayName, skillDescription, &frontmatterBody);
         if (skillDisplayName.isEmpty()) skillDisplayName = dirName;
         const bool nameMatches = skillDisplayName.compare(targetName, Qt::CaseInsensitive) == 0;
         if (!dirMatches && !nameMatches) continue;
@@ -220,6 +722,7 @@ bool resolveSkillCallSpec(const QString &skillsRoot, const QString &skillName, S
             found.skillFile = skillFile;
             found.rootDir = rootDir;
             found.skillContent = content;
+            found.frontmatterBody = frontmatterBody;
         }
     }
 
@@ -235,6 +738,10 @@ bool resolveSkillCallSpec(const QString &skillsRoot, const QString &skillName, S
     }
 
     buildSkillTree(found.rootDir, found.tree);
+    found.metadata = skillMetadataFromFrontmatter(found.frontmatterBody);
+    found.entrypointHints = inferSkillEntrypoints(found.tree, found.metadata);
+    found.dependencyHints = inferDependencyHints(found.tree, found.metadata);
+    found.outputHints = inferOutputHints(found.metadata);
     out = found;
     return true;
 }
@@ -455,8 +962,18 @@ struct xTool::ToolInvocation
     std::atomic<bool> timeoutReported{false};
     std::atomic<bool> finished{false};
     QString commandContent;
+    QString commandLabel;
+    QString commandShell;
+    QString effectiveCommandShell;
+    QString commandKey;
     QString aggregatedOutput;
+    QString stdoutText;
+    QString stderrText;
     QString workingDirectory;
+    QJsonObject commandEnv;
+    QStringList expectedOutputs;
+    bool repeatedFailedCommand = false;
+    bool pathRetryWithoutEvidence = false;
     int timeoutMs = 120000;
     bool highRisk = false;
     QElapsedTimer elapsedTimer;
@@ -519,11 +1036,15 @@ xTool::ToolInvocationPtr xTool::createInvocation(mcp::json tools_call)
     invocation->name = QString::fromStdString(get_string_safely(invocation->call, "name"));
     invocation->args = get_json_object_safely(invocation->call, "arguments");
     const QJsonObject capability = ToolRegistry::capabilityByName(invocation->name);
+    int capabilityTimeoutMs = 120000;
     if (!capability.isEmpty())
     {
-        invocation->timeoutMs = qMax(1000, capability.value(QStringLiteral("timeout_ms")).toInt(120000));
+        capabilityTimeoutMs = qMax(1000, capability.value(QStringLiteral("timeout_ms")).toInt(120000));
+        invocation->timeoutMs = capabilityTimeoutMs;
         invocation->highRisk = capability.value(QStringLiteral("high_risk")).toBool(false);
     }
+    const int requestedTimeoutMs = get_int_safely(invocation->args, "timeout_ms", -1);
+    if (requestedTimeoutMs > 0) invocation->timeoutMs = qMax(1000, requestedTimeoutMs);
     invocation->elapsedTimer.start();
     setActiveInvocation(invocation);
     FlowTracer::log(FlowChannel::Tool,
@@ -592,7 +1113,7 @@ bool xTool::markInvocationTimeout(const ToolInvocationPtr &invocation, int timeo
                                            .arg(timeoutMs)
                                            .arg(invocation->name));
     sendStateMessage(QStringLiteral("tool:") + msg, WRONG_SIGNAL);
-    sendPushMessage(msg);
+    if (activeCommandInvocation_ != invocation) sendPushMessage(msg);
     FlowTracer::log(FlowChannel::Tool,
                     QStringLiteral("tool:timeout name=%1 id=%2")
                         .arg(invocation->name)
@@ -781,7 +1302,11 @@ void xTool::Exec(mcp::json tools_call)
     }
     if (invocation->name == "execute_command")
     {
-        invocation->commandContent = QString::fromStdString(get_string_safely(invocation->args, "content"));
+        invocation->commandContent = QString::fromStdString(get_string_safely(invocation->args, "content", get_string_safely(invocation->args, "command"))).trimmed();
+        invocation->commandLabel = QString::fromStdString(get_string_safely(invocation->args, "label", get_string_safely(invocation->args, "summary"))).trimmed();
+        invocation->commandShell = QString::fromStdString(get_string_safely(invocation->args, "shell")).trimmed();
+        invocation->commandEnv = jsonObjectFromMcpObject(invocation->args, "env");
+        invocation->expectedOutputs = stringListFromJsonArray(invocation->args, "expected_outputs");
         startExecuteCommand(invocation);
         return;
     }
@@ -1395,7 +1920,7 @@ void xTool::runToolWorker(const ToolInvocationPtr &invocation)
         QString parseError;
         if (!parseFileSpecsFromArgs(tools_args_, specs, parseError))
         {
-            sendPushMessage(QStringLiteral("read_file ") + jtr("return") + " " + parseError);
+            sendPushMessage(makeToolReturnMessage(QStringLiteral("read_file"), jtr("return"), parseError, false));
             return;
         }
         const int kMaxFiles = 5;
@@ -1489,13 +2014,13 @@ void xTool::runToolWorker(const ToolInvocationPtr &invocation)
 
         if (outputs.isEmpty())
         {
-            sendPushMessage(QStringLiteral("read_file ") + jtr("return") + " no readable files.");
+            sendPushMessage(makeToolReturnMessage(QStringLiteral("read_file"), jtr("return"), QStringLiteral("no readable files."), false, QStringLiteral("path")));
             return;
         }
 
         const QString result = outputs.join("\n\n");
         sendStateMessage("tool:" + QString("read_file ") + jtr("return") + "\n" + result, TOOL_SIGNAL);
-        sendPushMessage(QString("read_file ") + jtr("return") + "\n" + result);
+        sendPushMessage(makeToolReturnMessage(QStringLiteral("read_file"), jtr("return"), result));
     }
 
     //----------------------技能调用------------------
@@ -1510,7 +2035,7 @@ void xTool::runToolWorker(const ToolInvocationPtr &invocation)
         {
             const QString detail = QStringLiteral("skill_call requires a non-empty name");
             sendStateMessage("tool:skill_call " + jtr("return") + "\n" + detail, WRONG_SIGNAL);
-            sendPushMessage(QStringLiteral("skill_call ") + jtr("return") + "\n" + detail);
+            sendPushMessage(makeToolReturnMessage(QStringLiteral("skill_call"), jtr("return"), detail, false));
             return;
         }
 
@@ -1520,7 +2045,7 @@ void xTool::runToolWorker(const ToolInvocationPtr &invocation)
         if (!resolveSkillCallSpec(skillsRoot, rawName, spec, resolveError))
         {
             sendStateMessage("tool:skill_call " + jtr("return") + "\n" + resolveError, WRONG_SIGNAL);
-            sendPushMessage(QStringLiteral("skill_call ") + jtr("return") + "\n" + resolveError);
+            sendPushMessage(makeToolReturnMessage(QStringLiteral("skill_call"), jtr("return"), resolveError, false));
             return;
         }
 
@@ -1540,6 +2065,10 @@ void xTool::runToolWorker(const ToolInvocationPtr &invocation)
         resultJson["path"] = QDir::fromNativeSeparators(fileDisplay).toStdString();
         resultJson["root"] = QDir::fromNativeSeparators(rootDisplay).toStdString();
         resultJson["skill_md"] = spec.skillContent.toStdString();
+        resultJson["metadata"] = qJsonObjectToMcpJson(spec.metadata);
+        resultJson["entrypoint_hints"] = qJsonArrayToMcpJson(spec.entrypointHints);
+        resultJson["dependency_hints"] = qJsonArrayToMcpJson(spec.dependencyHints);
+        resultJson["output_hints"] = qJsonArrayToMcpJson(spec.outputHints);
         mcp::json tree = mcp::json::array();
         for (const QString &item : spec.tree)
         {
@@ -1549,7 +2078,97 @@ void xTool::runToolWorker(const ToolInvocationPtr &invocation)
 
         const QString result = QString::fromStdString(resultJson.dump(2));
         sendStateMessage("tool:" + QStringLiteral("skill_call ") + jtr("return") + "\n" + result, TOOL_SIGNAL);
-        sendPushMessage(QStringLiteral("skill_call ") + jtr("return") + "\n" + result);
+        sendPushMessage(makeToolReturnMessage(QStringLiteral("skill_call"), jtr("return"), result));
+    }
+
+    else if (tools_name == "skill_run")
+    {
+        const QString rawName = QString::fromStdString(get_string_safely(tools_args_, "name", get_string_safely(tools_args_, "skill_name"))).trimmed();
+        const QString action = QString::fromStdString(get_string_safely(tools_args_, "action", "run")).trimmed();
+        if (rawName.isEmpty())
+        {
+            const QString detail = QStringLiteral("skill_run requires a non-empty name");
+            sendPushMessage(makeToolReturnMessage(QStringLiteral("skill_run"), jtr("return"), detail, false, QStringLiteral("syntax")));
+            return;
+        }
+        SkillCallSpec spec;
+        QString resolveError;
+        if (!resolveSkillCallSpec(QDir::cleanPath(resolveSkillsRoot()), rawName, spec, resolveError))
+        {
+            sendStateMessage(eva::runtime::progressEventLine(eva::runtime::ProgressEventKind::SkillLoading, resolveError, QJsonObject{}, invocation->turnId), WRONG_SIGNAL);
+            sendPushMessage(makeToolReturnMessage(QStringLiteral("skill_run"), jtr("return"), resolveError, false, QStringLiteral("path")));
+            return;
+        }
+        QString command = commandForSkillAction(spec, action);
+        if (command.isEmpty())
+        {
+            const QString detail = QStringLiteral("Skill has no declared or inferred command entrypoint: %1").arg(rawName);
+            QJsonObject data;
+            data.insert(QStringLiteral("metadata"), spec.metadata);
+            data.insert(QStringLiteral("entrypoint_hints"), spec.entrypointHints);
+            const QString envelope = eva::runtime::toolResultEnvelopeToString(eva::runtime::makeToolResultEnvelope(false, detail, data, QJsonArray{}, QJsonArray{}, eva::runtime::makeToolError(QStringLiteral("dependency"), detail), eva::runtime::recoveryHintsForFailure(QStringLiteral("dependency"))));
+            sendPushMessage(QStringLiteral("skill_run ") + jtr("return") + "\n" + envelope);
+            return;
+        }
+        const QString workRoot = QDir::cleanPath(resolveWorkRoot());
+        const QString runRoot = QDir(workRoot).filePath(QStringLiteral(".eva_runs"));
+        const QString runDir = QDir(runRoot).filePath(QStringLiteral("%1-%2").arg(safeRunSegment(spec.name)).arg(invocation->id));
+        const QString stagedRoot = QDir(runDir).filePath(QStringLiteral("skill"));
+        QDir().mkpath(runDir);
+        QString copyError;
+        if (!copyPathRecursive(spec.rootDir, stagedRoot, true, &copyError))
+        {
+            sendPushMessage(makeToolReturnMessage(QStringLiteral("skill_run"), jtr("return"), copyError, false, eva::runtime::toolErrorTypeForMessage(copyError)));
+            return;
+        }
+        sendStateMessage(eva::runtime::progressEventLine(eva::runtime::ProgressEventKind::SkillLoading, QStringLiteral("Skill staged"), QJsonObject{{QStringLiteral("run_dir"), runDir}, {QStringLiteral("skill"), spec.name}}, invocation->turnId), SIGNAL_SIGNAL);
+        sendStateMessage(eva::runtime::progressEventLine(eva::runtime::ProgressEventKind::SkillRunning, QStringLiteral("Skill command running"), QJsonObject{{QStringLiteral("command"), command}}, invocation->turnId), SIGNAL_SIGNAL);
+        QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+        env.insert(QStringLiteral("EVA_SKILL_ROOT"), stagedRoot);
+        env.insert(QStringLiteral("EVA_SKILL_RUN_DIR"), runDir);
+        env.insert(QStringLiteral("EVA_WORKSPACE"), workRoot);
+        const bool timeoutProvided = tools_args_.contains("timeout_ms");
+        const int timeoutMs = timeoutProvided
+                                  ? qMax(1000, get_int_safely(tools_args_, "timeout_ms", invocation->timeoutMs))
+                                  : invocation->timeoutMs;
+        const QString localCommand = localizedShellCommandForSkill(command);
+        const ProcessResult r = ProcessRunner::runShellCommand(localCommand, stagedRoot, env, timeoutMs);
+        QJsonObject data;
+        data.insert(QStringLiteral("tool"), QStringLiteral("skill_run"));
+        data.insert(QStringLiteral("name"), spec.name);
+        data.insert(QStringLiteral("action"), action.isEmpty() ? QStringLiteral("run") : action);
+        data.insert(QStringLiteral("command"), command);
+        data.insert(QStringLiteral("run_dir"), QDir::toNativeSeparators(runDir));
+        data.insert(QStringLiteral("staged_root"), QDir::toNativeSeparators(stagedRoot));
+        data.insert(QStringLiteral("stdout"), r.stdOut);
+        data.insert(QStringLiteral("stderr"), r.stdErr);
+        data.insert(QStringLiteral("exit_code"), r.exitCode);
+        data.insert(QStringLiteral("timed_out"), r.timedOut);
+        data.insert(QStringLiteral("metadata"), spec.metadata);
+        data.insert(QStringLiteral("entrypoint_hints"), spec.entrypointHints);
+        data.insert(QStringLiteral("dependency_hints"), spec.dependencyHints);
+        data.insert(QStringLiteral("output_hints"), spec.outputHints);
+        const QStringList expectedOutputs = stringListFromJsonArray(tools_args_, "expected_outputs");
+        QStringList artifactRoots;
+        artifactRoots << runDir << stagedRoot << QDir(workRoot).filePath(QStringLiteral("artifacts"));
+        QJsonArray artifacts = confirmedArtifactsUnderRoots(artifactRoots, expectedOutputs);
+        if (!artifacts.isEmpty()) data.insert(QStringLiteral("confirmed_artifact_count"), artifacts.size());
+        const bool missingExpectedOutputs = !expectedOutputs.isEmpty() && artifacts.size() < expectedOutputs.size();
+        if (missingExpectedOutputs)
+        {
+            data.insert(QStringLiteral("missing_expected_outputs"), QJsonArray::fromStringList(expectedOutputs));
+            data.insert(QStringLiteral("artifact_search"), eva::runtime::artifactMissingRecoveryPlan(expectedOutputs, artifactRoots));
+        }
+        const bool ok = (r.exitCode == 0 && !r.timedOut && !missingExpectedOutputs);
+        const QString combined = r.stdOut + QLatin1Char('\n') + r.stdErr;
+        const QString errorType = ok ? QString() : (missingExpectedOutputs ? QStringLiteral("artifact_missing") : (r.timedOut ? QStringLiteral("timeout") : eva::runtime::toolErrorTypeForMessage(combined)));
+        QJsonObject error = ok ? QJsonObject{} : eva::runtime::makeToolError(errorType, missingExpectedOutputs ? QStringLiteral("Expected Skill output artifact was not found.") : combined.left(2000));
+        QJsonArray hints = ok ? QJsonArray{} : eva::runtime::recoveryHintsForFailure(errorType);
+        const QString summary = ok ? QStringLiteral("Skill completed: %1").arg(spec.name) : QStringLiteral("Skill failed: %1").arg(spec.name);
+        const QString envelope = eva::runtime::toolResultEnvelopeToString(eva::runtime::makeToolResultEnvelope(ok, summary, data, artifacts, QJsonArray{}, error, hints));
+        if (!artifacts.isEmpty()) sendStateMessage(eva::runtime::progressEventLine(eva::runtime::ProgressEventKind::ArtifactReady, QStringLiteral("Skill artifacts ready"), QJsonObject{{QStringLiteral("count"), artifacts.size()}}, invocation->turnId), SIGNAL_SIGNAL);
+        sendStateMessage(QStringLiteral("tool:skill_run ") + jtr("return") + "\n" + summary, ok ? TOOL_SIGNAL : WRONG_SIGNAL);
+        sendPushMessage(QStringLiteral("skill_run ") + jtr("return") + "\n" + envelope);
     }
 
     //----------------------写入文件------------------
@@ -1561,8 +2180,16 @@ void xTool::runToolWorker(const ToolInvocationPtr &invocation)
         QString pathError;
         if (!resolveToolPath(filepath, &pathRes, &pathError))
         {
-            sendPushMessage(QString("write_file ") + jtr("return") + "\n" + (pathError.isEmpty() ? QStringLiteral("invalid path") : pathError));
+            sendPushMessage(makeToolReturnMessage(QStringLiteral("write_file"), jtr("return"), pathError.isEmpty() ? QStringLiteral("invalid path") : pathError, false, QStringLiteral("path")));
             return;
+        }
+        {
+            const QString workRoot = QDir::cleanPath(resolveWorkRoot());
+            if (!pathRes.hostPath.isEmpty() && !hostPathInsideRoot(pathRes.hostPath, workRoot))
+            {
+                sendPushMessage(makeToolReturnMessage(QStringLiteral("write_file"), jtr("return"), QStringLiteral("Access denied: write target must be inside workspace."), false, QStringLiteral("permission")));
+                return;
+            }
         }
         if (dockerSandboxEnabled())
         {
@@ -1571,7 +2198,7 @@ void xTool::runToolWorker(const ToolInvocationPtr &invocation)
             const QString dockerPath = pathIsContainer ? pathRes.containerPath : pathRes.hostPath;
             if (!dockerWriteTextFile(dockerPath, content, &error, pathIsContainer))
             {
-                sendPushMessage(QString("write_file ") + jtr("return") + "\n" + error);
+                sendPushMessage(makeToolReturnMessage(QStringLiteral("write_file"), jtr("return"), error, false));
                 return;
             }
         }
@@ -1582,13 +2209,13 @@ void xTool::runToolWorker(const ToolInvocationPtr &invocation)
             QDir dir;
             if (!dir.mkpath(dirPath))
             {
-                sendPushMessage(QString("write_file ") + jtr("return") + "Failed to create directory");
+                sendPushMessage(makeToolReturnMessage(QStringLiteral("write_file"), jtr("return"), QStringLiteral("Failed to create directory"), false, QStringLiteral("permission")));
                 return;
             }
             QFile file(pathRes.hostPath);
             if (!file.open(QIODevice::WriteOnly | QIODevice::Text))
             {
-                sendPushMessage(QString("write_file ") + jtr("return") + "Could not open file for writing" + file.errorString());
+                sendPushMessage(makeToolReturnMessage(QStringLiteral("write_file"), jtr("return"), QStringLiteral("Could not open file for writing") + file.errorString(), false, QStringLiteral("permission")));
                 return;
             }
             QTextStream out(&file);
@@ -1598,7 +2225,131 @@ void xTool::runToolWorker(const ToolInvocationPtr &invocation)
         }
         QString result = "write over";
         sendStateMessage("tool:" + QString("write_file ") + jtr("return") + "\n" + result, TOOL_SIGNAL);
-        sendPushMessage(QString("write_file ") + jtr("return") + "\n" + result);
+        sendPushMessage(makeToolReturnMessage(QStringLiteral("write_file"), jtr("return"), result));
+    }
+
+    else if (tools_name == "stat_file")
+    {
+        const QString filepath = QString::fromStdString(get_string_safely(tools_args_, "path"));
+        ToolPathResolution pathRes;
+        QString pathError;
+        if (!resolveToolPath(filepath, &pathRes, &pathError) || pathRes.hostPath.isEmpty())
+        {
+            const QString msg = pathError.isEmpty() ? QStringLiteral("invalid path") : pathError;
+            sendPushMessage(makeToolReturnMessage(QStringLiteral("stat_file"), jtr("return"), msg, false, QStringLiteral("path")));
+            return;
+        }
+        const QFileInfo info(pathRes.hostPath);
+        if (!info.exists())
+        {
+            const QString msg = QStringLiteral("Path not found: %1").arg(filepath);
+            sendPushMessage(makeToolReturnMessage(QStringLiteral("stat_file"), jtr("return"), msg, false, QStringLiteral("path")));
+            return;
+        }
+
+        const QString workRoot = QDir::cleanPath(resolveWorkRoot());
+        const QString skillsRoot = QDir::cleanPath(resolveSkillsRoot());
+        QJsonObject data = workspacePathMetadata(pathRes.hostPath, filepath, workRoot, skillsRoot);
+        data.insert(QStringLiteral("allowed_roots"), allowedRootsMetadata(workRoot, skillsRoot));
+        recoveryEvidenceSinceLastFailure_ = true;
+        const QString summary = QStringLiteral("Stat %1: %2").arg(filepath, data.value(QStringLiteral("type")).toString());
+        const QString envelope = eva::runtime::toolResultEnvelopeToString(
+            eva::runtime::makeToolResultEnvelope(true, summary, data));
+        sendStateMessage(QStringLiteral("tool:stat_file ") + jtr("return") + "\n" + summary, TOOL_SIGNAL);
+        sendPushMessage(QStringLiteral("stat_file ") + jtr("return") + "\n" + envelope);
+    }
+
+    else if (tools_name == "copy_file")
+    {
+        const QString source = QString::fromStdString(get_string_safely(tools_args_, "source"));
+        const QString destination = QString::fromStdString(get_string_safely(tools_args_, "destination"));
+        const bool overwrite = tools_args_.contains("overwrite") ? get_bool_safely(tools_args_, "overwrite") : false;
+        ToolPathResolution sourceRes;
+        ToolPathResolution destinationRes;
+        QString pathError;
+        if (!resolveToolPath(source, &sourceRes, &pathError) || sourceRes.hostPath.isEmpty())
+        {
+            const QString msg = pathError.isEmpty() ? QStringLiteral("invalid source path") : pathError;
+            sendPushMessage(makeToolReturnMessage(QStringLiteral("copy_file"), jtr("return"), msg, false, QStringLiteral("path")));
+            return;
+        }
+        pathError.clear();
+        if (!resolveToolPath(destination, &destinationRes, &pathError) || destinationRes.hostPath.isEmpty())
+        {
+            const QString msg = pathError.isEmpty() ? QStringLiteral("invalid destination path") : pathError;
+            sendPushMessage(makeToolReturnMessage(QStringLiteral("copy_file"), jtr("return"), msg, false, QStringLiteral("path")));
+            return;
+        }
+        const QString workRoot = QDir::cleanPath(resolveWorkRoot());
+        const QString skillsRoot = QDir::cleanPath(resolveSkillsRoot());
+        if (!hostPathInsideRoot(destinationRes.hostPath, workRoot))
+        {
+            const QString msg = QStringLiteral("Access denied: destination must be inside workspace -> %1").arg(QDir::toNativeSeparators(destinationRes.hostPath));
+            sendPushMessage(makeToolReturnMessage(QStringLiteral("copy_file"), jtr("return"), msg, false, QStringLiteral("path")));
+            return;
+        }
+        QString copyError;
+        if (!copyPathRecursive(sourceRes.hostPath, destinationRes.hostPath, overwrite, &copyError))
+        {
+            sendPushMessage(makeToolReturnMessage(QStringLiteral("copy_file"), jtr("return"), copyError, false, eva::runtime::toolErrorTypeForMessage(copyError)));
+            return;
+        }
+
+        QJsonObject data;
+        data.insert(QStringLiteral("source"), workspacePathMetadata(sourceRes.hostPath, source, workRoot, skillsRoot));
+        data.insert(QStringLiteral("destination"), workspacePathMetadata(destinationRes.hostPath, destination, workRoot, skillsRoot, destination, QStringLiteral("copy_file")));
+        data.insert(QStringLiteral("overwrite"), overwrite);
+        data.insert(QStringLiteral("allowed_roots"), allowedRootsMetadata(workRoot, skillsRoot));
+        QJsonArray artifacts;
+        artifacts.append(data.value(QStringLiteral("destination")).toObject());
+        recoveryEvidenceSinceLastFailure_ = true;
+        const QString summary = QStringLiteral("Copied %1 to %2").arg(source, destination);
+        const QString envelope = eva::runtime::toolResultEnvelopeToString(
+            eva::runtime::makeToolResultEnvelope(true, summary, data, artifacts));
+        sendStateMessage(QStringLiteral("tool:copy_file ") + jtr("return") + "\n" + summary, TOOL_SIGNAL);
+        sendPushMessage(QStringLiteral("copy_file ") + jtr("return") + "\n" + envelope);
+    }
+
+    else if (tools_name == "artifact_confirm")
+    {
+        const QString filepath = QString::fromStdString(get_string_safely(tools_args_, "path"));
+        const QString label = QString::fromStdString(get_string_safely(tools_args_, "label"));
+        const QString sourceTool = QString::fromStdString(get_string_safely(tools_args_, "source_tool"));
+        ToolPathResolution pathRes;
+        QString pathError;
+        if (!resolveToolPath(filepath, &pathRes, &pathError) || pathRes.hostPath.isEmpty())
+        {
+            const QString msg = pathError.isEmpty() ? QStringLiteral("invalid artifact path") : pathError;
+            sendPushMessage(makeToolReturnMessage(QStringLiteral("artifact_confirm"), jtr("return"), msg, false, QStringLiteral("path")));
+            return;
+        }
+        const QFileInfo info(pathRes.hostPath);
+        if (!info.exists() || !info.isFile())
+        {
+            const QString msg = QStringLiteral("Artifact missing: %1").arg(filepath);
+            sendPushMessage(makeToolReturnMessage(QStringLiteral("artifact_confirm"), jtr("return"), msg, false, QStringLiteral("artifact_missing")));
+            return;
+        }
+
+        const QString workRoot = QDir::cleanPath(resolveWorkRoot());
+        const QString skillsRoot = QDir::cleanPath(resolveSkillsRoot());
+        QJsonObject artifact = workspacePathMetadata(pathRes.hostPath,
+                                                     filepath,
+                                                     workRoot,
+                                                     skillsRoot,
+                                                     label.isEmpty() ? QFileInfo(filepath).fileName() : label,
+                                                     sourceTool.isEmpty() ? QStringLiteral("artifact_confirm") : sourceTool);
+        QJsonArray artifacts;
+        artifacts.append(artifact);
+        QJsonObject data = artifact;
+        data.insert(QStringLiteral("allowed_roots"), allowedRootsMetadata(workRoot, skillsRoot));
+        data.insert(QStringLiteral("retention_policy"), QStringLiteral("Artifacts are retained under approved workspace/artifact paths; temporary run directories and logs should remain diagnosable for the session and may be cleaned by workspace retention policy."));
+        recoveryEvidenceSinceLastFailure_ = true;
+        const QString summary = QStringLiteral("Artifact confirmed: %1 (%2 B)").arg(filepath, QString::number(info.size()));
+        const QString envelope = eva::runtime::toolResultEnvelopeToString(
+            eva::runtime::makeToolResultEnvelope(true, summary, data, artifacts));
+        sendStateMessage(QStringLiteral("tool:artifact_confirm ") + jtr("return") + "\n" + summary, TOOL_SIGNAL);
+        sendPushMessage(QStringLiteral("artifact_confirm ") + jtr("return") + "\n" + envelope);
     }
 
     else if (tools_name == "replace_in_file")
@@ -1622,15 +2373,23 @@ void xTool::runToolWorker(const ToolInvocationPtr &invocation)
         }
         if (oldStrRaw.isEmpty())
         {
-            sendPushMessage(QStringLiteral("replace_in_file ") + jtr("return") + QStringLiteral(" old_string is empty."));
+            sendPushMessage(makeToolReturnMessage(QStringLiteral("replace_in_file"), jtr("return"), QStringLiteral("old_string is empty."), false, QStringLiteral("syntax")));
             return;
         }
         ToolPathResolution pathRes;
         QString pathError;
         if (!resolveToolPath(filepath, &pathRes, &pathError))
         {
-            sendPushMessage(QStringLiteral("replace_in_file ") + jtr("return") + " " + (pathError.isEmpty() ? QStringLiteral("invalid path") : pathError));
+            sendPushMessage(makeToolReturnMessage(QStringLiteral("replace_in_file"), jtr("return"), pathError.isEmpty() ? QStringLiteral("invalid path") : pathError, false, QStringLiteral("path")));
             return;
+        }
+        {
+            const QString workRoot = QDir::cleanPath(resolveWorkRoot());
+            if (!pathRes.hostPath.isEmpty() && !hostPathInsideRoot(pathRes.hostPath, workRoot))
+            {
+                sendPushMessage(makeToolReturnMessage(QStringLiteral("replace_in_file"), jtr("return"), QStringLiteral("Access denied: edit target must be inside workspace."), false, QStringLiteral("permission")));
+                return;
+            }
         }
         QString originalContent;
         if (dockerSandboxEnabled())
@@ -1640,7 +2399,7 @@ void xTool::runToolWorker(const ToolInvocationPtr &invocation)
             const QString dockerPath = pathIsContainer ? pathRes.containerPath : pathRes.hostPath;
             if (!dockerReadTextFile(dockerPath, &originalContent, &error, pathIsContainer))
             {
-                sendPushMessage(QStringLiteral("replace_in_file ") + jtr("return") + " " + error);
+                sendPushMessage(makeToolReturnMessage(QStringLiteral("replace_in_file"), jtr("return"), error, false));
                 return;
             }
         }
@@ -1649,7 +2408,7 @@ void xTool::runToolWorker(const ToolInvocationPtr &invocation)
             QFile inFile(pathRes.hostPath);
             if (!inFile.open(QIODevice::ReadOnly | QIODevice::Text))
             {
-                sendPushMessage(QStringLiteral("replace_in_file ") + jtr("return") + "Could not open file for reading: " + inFile.errorString());
+                sendPushMessage(makeToolReturnMessage(QStringLiteral("replace_in_file"), jtr("return"), QStringLiteral("Could not open file for reading: ") + inFile.errorString(), false, QStringLiteral("path")));
                 return;
             }
             originalContent = QString::fromUtf8(inFile.readAll());
@@ -1683,7 +2442,7 @@ void xTool::runToolWorker(const ToolInvocationPtr &invocation)
         {
             QString msg = QString("Expected %1 replacement(s) but found %2. ").arg(expectedRepl).arg(matches.size());
             msg += QStringLiteral("Consider narrowing old_string or reading the file to confirm current content.");
-            sendPushMessage(QStringLiteral("replace_in_file ") + jtr("return") + " " + msg);
+            sendPushMessage(makeToolReturnMessage(QStringLiteral("replace_in_file"), jtr("return"), msg, false, QStringLiteral("syntax")));
             return;
         }
         const bool autoExpanded = !expectedProvided && matches.size() > expectedRepl;
@@ -1704,7 +2463,7 @@ void xTool::runToolWorker(const ToolInvocationPtr &invocation)
             const QString dockerPath = pathIsContainer ? pathRes.containerPath : pathRes.hostPath;
             if (!dockerWriteTextFile(dockerPath, finalContent, &error, pathIsContainer))
             {
-                sendPushMessage(QStringLiteral("replace_in_file ") + jtr("return") + " " + error);
+                sendPushMessage(makeToolReturnMessage(QStringLiteral("replace_in_file"), jtr("return"), error, false));
                 return;
             }
         }
@@ -1714,13 +2473,13 @@ void xTool::runToolWorker(const ToolInvocationPtr &invocation)
             QDir dir;
             if (!dir.mkpath(fi.absolutePath()))
             {
-                sendPushMessage(QStringLiteral("replace_in_file ") + jtr("return") + QStringLiteral("Failed to create directory."));
+                sendPushMessage(makeToolReturnMessage(QStringLiteral("replace_in_file"), jtr("return"), QStringLiteral("Failed to create directory."), false, QStringLiteral("permission")));
                 return;
             }
             QFile outFile(pathRes.hostPath);
             if (!outFile.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate))
             {
-                sendPushMessage(QStringLiteral("replace_in_file ") + jtr("return") + "Could not open file for writing: " + outFile.errorString());
+                sendPushMessage(makeToolReturnMessage(QStringLiteral("replace_in_file"), jtr("return"), QStringLiteral("Could not open file for writing: ") + outFile.errorString(), false, QStringLiteral("permission")));
                 return;
             }
             QTextStream ts(&outFile);
@@ -1734,7 +2493,7 @@ void xTool::runToolWorker(const ToolInvocationPtr &invocation)
         if (autoExpanded && applied > 1) notes << QString("auto-applied to %1 identical matches").arg(applied);
         if (!notes.isEmpty()) result += QString(" [%1]").arg(notes.join("; "));
         sendStateMessage(QStringLiteral("tool:replace_in_file ") + jtr("return") + "\n" + result, TOOL_SIGNAL);
-        sendPushMessage(QStringLiteral("replace_in_file ") + jtr("return") + "\n" + result);
+        sendPushMessage(makeToolReturnMessage(QStringLiteral("replace_in_file"), jtr("return"), result));
     }
 
 
@@ -1743,7 +2502,7 @@ void xTool::runToolWorker(const ToolInvocationPtr &invocation)
     else if (tools_name == "edit_in_file")
     {
         const auto sendError = [&](const QString &msg) {
-            sendPushMessage(QStringLiteral("edit_in_file ") + jtr("return") + " " + msg);
+            sendPushMessage(makeToolReturnMessage(QStringLiteral("edit_in_file"), jtr("return"), msg, false));
         };
         if (!tools_args_.contains("edits") || !tools_args_["edits"].is_array())
         {
@@ -1757,6 +2516,14 @@ void xTool::runToolWorker(const ToolInvocationPtr &invocation)
         {
             sendError(pathError.isEmpty() ? QStringLiteral("Invalid path") : pathError);
             return;
+        }
+        {
+            const QString workRoot = QDir::cleanPath(resolveWorkRoot());
+            if (!pathRes.hostPath.isEmpty() && !hostPathInsideRoot(pathRes.hostPath, workRoot))
+            {
+                sendError(QStringLiteral("Access denied: edit target must be inside workspace."));
+                return;
+            }
         }
         QString originalContent;
         if (dockerSandboxEnabled())
@@ -1889,7 +2656,7 @@ void xTool::runToolWorker(const ToolInvocationPtr &invocation)
         }
         if (operations.isEmpty())
         {
-            sendPushMessage(QStringLiteral("edit_in_file ") + jtr("return") + QStringLiteral(" no edits supplied."));
+            sendPushMessage(makeToolReturnMessage(QStringLiteral("edit_in_file"), jtr("return"), QStringLiteral("no edits supplied."), false, QStringLiteral("syntax")));
             return;
         }
         std::sort(operations.begin(), operations.end(), [](const EditOperation &a, const EditOperation &b) {
@@ -2008,14 +2775,14 @@ void xTool::runToolWorker(const ToolInvocationPtr &invocation)
             result += ensureNewline ? " [newline ensured]" : " [newline removed]";
         }
         sendStateMessage(QStringLiteral("tool:edit_in_file ") + jtr("return") + "\n" + result, TOOL_SIGNAL);
-        sendPushMessage(QStringLiteral("edit_in_file ") + jtr("return") + "\n" + result);
+        sendPushMessage(makeToolReturnMessage(QStringLiteral("edit_in_file"), jtr("return"), result));
     }
 
     //----------------------ptc（工程师）------------------
     else if (tools_name == "ptc")
     {
         auto fail = [&](const QString &message) {
-            sendPushMessage(QStringLiteral("ptc ") + jtr("return") + " " + message);
+            sendPushMessage(makeToolReturnMessage(QStringLiteral("ptc"), jtr("return"), message, false));
             sendStateMessage(QStringLiteral("tool:ptc error -> ") + message, WRONG_SIGNAL);
         };
         QString fileName = QString::fromStdString(get_string_safely(tools_args_, "filename")).trimmed();
@@ -2183,7 +2950,7 @@ void xTool::runToolWorker(const ToolInvocationPtr &invocation)
             finalText.prepend(dockerFailureText + QStringLiteral("\n"));
         }
         sendStateMessage(QStringLiteral("tool:ptc ") + jtr("return") + "\n" + finalText, TOOL_SIGNAL);
-        sendPushMessage(QStringLiteral("ptc ") + jtr("return") + "\n" + finalText);
+        sendPushMessage(makeToolReturnMessage(QStringLiteral("ptc"), jtr("return"), finalText, exitKnown ? exitCode == 0 : dockerOk));
     }
 
     //----------------------列出目录（工程师）------------------
@@ -2200,7 +2967,7 @@ void xTool::runToolWorker(const ToolInvocationPtr &invocation)
         {
             const QString msg = resolveError.isEmpty() ? QStringLiteral("Unable to resolve path: %1").arg(effectivePath)
                                                        : resolveError;
-            sendPushMessage(QString("list_files ") + jtr("return") + " " + msg);
+            sendPushMessage(makeToolReturnMessage(QStringLiteral("list_files"), jtr("return"), msg, false, QStringLiteral("path")));
             sendStateMessage("tool:" + QString("list_files ") + jtr("return") + " " + msg, TOOL_SIGNAL);
             return;
         }
@@ -2208,7 +2975,7 @@ void xTool::runToolWorker(const ToolInvocationPtr &invocation)
         if (!dirInfo.exists() || !dirInfo.isDir())
         {
             const QString msg = QString("Not a directory: %1").arg(dirInfo.absoluteFilePath());
-            sendPushMessage(QString("list_files ") + jtr("return") + " " + msg);
+            sendPushMessage(makeToolReturnMessage(QStringLiteral("list_files"), jtr("return"), msg, false, QStringLiteral("path")));
             sendStateMessage("tool:" + QString("list_files ") + jtr("return") + " " + msg, TOOL_SIGNAL);
             return;
         }
@@ -2240,7 +3007,7 @@ void xTool::runToolWorker(const ToolInvocationPtr &invocation)
         if (shouldAbort(invocation)) return;
         const QString result = outLines.join(" ");
         sendStateMessage("tool:" + QString("list_files ") + jtr("return") + " " + result, TOOL_SIGNAL);
-        sendPushMessage(QString("list_files ") + jtr("return") + " " + result);
+        sendPushMessage(makeToolReturnMessage(QStringLiteral("list_files"), jtr("return"), result));
     }
     //----------------------搜索内容（工程师）------------------
     else if (tools_name == "search_content")
@@ -2252,7 +3019,7 @@ void xTool::runToolWorker(const ToolInvocationPtr &invocation)
         if (query.trimmed().isEmpty())
         {
             const QString msg = QString("Empty query.");
-            sendPushMessage(QString("search_content ") + jtr("return") + " " + msg);
+            sendPushMessage(makeToolReturnMessage(QStringLiteral("search_content"), jtr("return"), msg, false, QStringLiteral("syntax")));
             sendStateMessage("tool:" + QString("search_content ") + jtr("return") + " " + msg, TOOL_SIGNAL);
             return;
         }
@@ -2265,7 +3032,7 @@ void xTool::runToolWorker(const ToolInvocationPtr &invocation)
             if (resolved.isEmpty())
             {
                 const QString msg = resolveError.isEmpty() ? QStringLiteral("Invalid search path: %1").arg(subDir) : resolveError;
-                sendPushMessage(QString("search_content ") + jtr("return") + " " + msg);
+                sendPushMessage(makeToolReturnMessage(QStringLiteral("search_content"), jtr("return"), msg, false, QStringLiteral("path")));
                 sendStateMessage("tool:" + QString("search_content ") + jtr("return") + " " + msg, TOOL_SIGNAL);
                 return;
             }
@@ -2275,7 +3042,7 @@ void xTool::runToolWorker(const ToolInvocationPtr &invocation)
         if (!rootDir.exists())
         {
             const QString msg = QString("Work directory not found: %1").arg(targetRoot);
-            sendPushMessage(QString("search_content ") + jtr("return") + " " + msg);
+            sendPushMessage(makeToolReturnMessage(QStringLiteral("search_content"), jtr("return"), msg, false, QStringLiteral("path")));
             sendStateMessage("tool:" + QString("search_content ") + jtr("return") + " " + msg, TOOL_SIGNAL);
             return;
         }
@@ -2380,7 +3147,7 @@ void xTool::runToolWorker(const ToolInvocationPtr &invocation)
         if (results.isEmpty())
         {
             const QString msg = QString("No matches.");
-            sendPushMessage(QString("search_content ") + jtr("return") + " " + msg);
+            sendPushMessage(makeToolReturnMessage(QStringLiteral("search_content"), jtr("return"), msg));
             sendStateMessage("tool:" + QString("search_content ") + jtr("return") + " " + msg, TOOL_SIGNAL);
             return;
         }
@@ -2399,7 +3166,7 @@ void xTool::runToolWorker(const ToolInvocationPtr &invocation)
         const QString result = results.join("\n");
         const QString prefix = QString("search_content ") + jtr("return") + "\n";
         sendStateMessage("tool:" + prefix + result, TOOL_SIGNAL);
-        sendPushMessage(prefix + result);
+        sendPushMessage(makeToolReturnMessage(QStringLiteral("search_content"), jtr("return"), result));
     }
     else if (tools_name.contains("mcp_tools_list")) // 查询mcp可用工具
     {
@@ -2419,33 +3186,75 @@ void xTool::runToolWorker(const ToolInvocationPtr &invocation)
 void xTool::startExecuteCommand(const ToolInvocationPtr &invocation)
 {
     if (!invocation) return;
-    const QString content = invocation->commandContent;
+    const QString content = invocation->commandContent.trimmed();
+    if (content.isEmpty())
+    {
+        sendPushMessage(makeToolReturnMessage(QStringLiteral("execute_command"), QStringLiteral("return"), QStringLiteral("command content is empty"), false, QStringLiteral("syntax")));
+        finishInvocation(invocation);
+        return;
+    }
+
+    QString work = resolveWorkRoot();
+    const QString cwdArg = QString::fromStdString(get_string_safely(invocation->args, "cwd", get_string_safely(invocation->args, "workdir"))).trimmed();
+    if (!cwdArg.isEmpty())
+    {
+        QString pathError;
+        const QString resolved = resolveHostPathWithinWorkdir(cwdArg, &pathError);
+        if (resolved.isEmpty())
+        {
+            const QString msg = pathError.isEmpty() ? QStringLiteral("invalid cwd") : pathError;
+            sendPushMessage(makeToolReturnMessage(QStringLiteral("execute_command"), QStringLiteral("return"), msg, false, QStringLiteral("path")));
+            sendStateMessage("tool:" + QStringLiteral("execute_command cwd error\n") + msg, WRONG_SIGNAL);
+            finishInvocation(invocation);
+            return;
+        }
+        work = resolved;
+    }
+    ensureWorkdirExists(work);
+
+    const QString shellName = invocation->commandShell.isEmpty() ? QStringLiteral("default") : invocation->commandShell;
+    invocation->effectiveCommandShell = shellName;
+    invocation->commandKey = makeCommandKey(content, work, shellName, invocation->commandEnv);
+    invocation->repeatedFailedCommand = (!lastFailedCommandKey_.isEmpty() && lastFailedCommandKey_ == invocation->commandKey);
+    invocation->pathRetryWithoutEvidence = (!lastPathFailureCommandKey_.isEmpty() && lastPathFailureCommandKey_ == invocation->commandKey && !recoveryEvidenceSinceLastFailure_);
+    if (invocation->repeatedFailedCommand)
+    {
+        sendStateMessage(QStringLiteral("tool:execute_command repeated previous failed command; inspect output or change strategy"), SIGNAL_SIGNAL);
+    }
+    if (invocation->pathRetryWithoutEvidence)
+    {
+        sendStateMessage(eva::runtime::progressEventLine(eva::runtime::ProgressEventKind::Recovering, QStringLiteral("Path-sensitive command retry lacks new stat/list/copy evidence"), QJsonObject{{QStringLiteral("tool"), QStringLiteral("execute_command")}, {QStringLiteral("requires_new_evidence"), true}}, invocation->turnId), SIGNAL_SIGNAL);
+    }
+
     sendStateMessage("tool:" + QString("execute_command(") + content + ")");
     FlowTracer::log(FlowChannel::Tool,
-                    QStringLiteral("tool:exec start workdir=%1 docker=%2")
-                        .arg(resolveWorkRoot(),
+                    QStringLiteral("tool:exec start workdir=%1 shell=%2 docker=%3")
+                        .arg(work,
+                             shellName,
                              dockerSandboxEnabled() ? QStringLiteral("yes") : QStringLiteral("no")),
                     invocation->turnId);
-    const QString work = resolveWorkRoot();
-    ensureWorkdirExists(work);
+
     const bool useDocker = dockerSandboxEnabled();
     QString dockerError;
     if (useDocker && !ensureDockerSandboxReady(&dockerError))
     {
-        sendPushMessage(QStringLiteral("execute_command failed: ") + dockerError);
+        sendPushMessage(makeToolReturnMessage(QStringLiteral("execute_command"), QStringLiteral("return"), QStringLiteral("docker error: ") + dockerError, false));
         sendStateMessage("tool:" + QStringLiteral("execute_command docker error\n") + dockerError, WRONG_SIGNAL);
-        FlowTracer::log(FlowChannel::Tool,
-                        QStringLiteral("tool:exec docker error %1").arg(dockerError),
-                        invocation->turnId);
+        FlowTracer::log(FlowChannel::Tool, QStringLiteral("tool:exec docker error %1").arg(dockerError), invocation->turnId);
         finishInvocation(invocation);
         return;
     }
-    const QString effectiveWorkdir = dockerWorkdirOrFallback(work);
+
+    const QString effectiveWorkdir = useDocker ? dockerWorkdirOrFallback(work) : work;
     auto process = new QProcess(this);
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
 #ifdef __linux__
     env.insert("PATH", "/usr/local/bin:/usr/bin:/bin:" + env.value("PATH"));
 #endif
+    for (const QString &key : invocation->commandEnv.keys())
+    {
+        env.insert(key, invocation->commandEnv.value(key).toVariant().toString());
+    }
     process->setProcessEnvironment(env);
     process->setWorkingDirectory(work);
     process->setProcessChannelMode(QProcess::SeparateChannels);
@@ -2453,25 +3262,36 @@ void xTool::startExecuteCommand(const ToolInvocationPtr &invocation)
     activeCommandInvocation_ = invocation;
     activeCommandInterrupted_ = false;
     invocation->aggregatedOutput.clear();
+    invocation->stdoutText.clear();
+    invocation->stderrText.clear();
     invocation->workingDirectory = effectiveWorkdir;
     emit tool2ui_terminalCommandStarted(content, effectiveWorkdir);
-    QObject::connect(process, &QProcess::readyReadStandardOutput, this, [this, process, invocation]()
-                     { handleCommandStdout(invocation, process, false); });
-    QObject::connect(process, &QProcess::readyReadStandardError, this, [this, process, invocation]()
-                     { handleCommandStdout(invocation, process, true); });
-    QObject::connect(process, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this, [this, process, invocation](int exitCode, QProcess::ExitStatus status)
-                     {
+    QPointer<xTool> self(this);
+    QTimer::singleShot(1000, this, [self, invocation]() {
+        if (!self || !invocation) return;
+        if (invocation->finished.load(std::memory_order_acquire)) return;
+        if (self->activeCommandInvocation_ != invocation) return;
+        self->sendStateMessage(QStringLiteral("tool:execute_command running id=%1 cwd=%2")
+                                   .arg(invocation->id)
+                                   .arg(invocation->workingDirectory),
+                               SIGNAL_SIGNAL);
+    });
+    QObject::connect(process, &QProcess::readyReadStandardOutput, this, [this, process, invocation]() { handleCommandStdout(invocation, process, false); });
+    QObject::connect(process, &QProcess::readyReadStandardError, this, [this, process, invocation]() { handleCommandStdout(invocation, process, true); });
+    QObject::connect(process, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this, [this, process, invocation](int exitCode, QProcess::ExitStatus status) {
         handleCommandFinished(invocation, process, exitCode, status);
-        process->deleteLater(); });
-    QObject::connect(process, &QProcess::errorOccurred, this, [this, process, invocation](QProcess::ProcessError error)
-                     {
+        process->deleteLater();
+    });
+    QObject::connect(process, &QProcess::errorOccurred, this, [this, process, invocation](QProcess::ProcessError error) {
         if (error == QProcess::FailedToStart)
         {
             const QString err = process->errorString();
             emit tool2ui_terminalStderr(err + "\n");
             handleCommandFinished(invocation, process, -1, QProcess::CrashExit);
             process->deleteLater();
-        } });
+        }
+    });
+
     QString program;
     QStringList args;
     if (useDocker)
@@ -2481,16 +3301,46 @@ void xTool::startExecuteCommand(const ToolInvocationPtr &invocation)
 #else
         program = QStringLiteral("docker");
 #endif
-        args << QStringLiteral("exec") << QStringLiteral("-i") << dockerSandbox_->containerName()
+        invocation->effectiveCommandShell = QStringLiteral("/bin/sh");
+        invocation->commandKey = makeCommandKey(content, work, invocation->effectiveCommandShell, invocation->commandEnv);
+        args << QStringLiteral("exec") << QStringLiteral("-i") << QStringLiteral("-w") << effectiveWorkdir;
+        for (const QString &key : invocation->commandEnv.keys())
+        {
+            args << QStringLiteral("-e") << QStringLiteral("%1=%2").arg(key, invocation->commandEnv.value(key).toVariant().toString());
+        }
+        args << dockerSandbox_->containerName()
              << QStringLiteral("/bin/sh") << QStringLiteral("-lc") << content;
     }
     else
     {
+        const QString requestedShell = invocation->commandShell.trimmed().toLower();
 #ifdef _WIN32
-        program = QStringLiteral("cmd.exe");
-        args << QStringLiteral("/c") << content;
+        if (requestedShell.contains(QStringLiteral("powershell")))
+        {
+            program = QStringLiteral("powershell.exe");
+            invocation->effectiveCommandShell = QStringLiteral("powershell");
+            invocation->commandKey = makeCommandKey(content, work, invocation->effectiveCommandShell, invocation->commandEnv);
+            args << QStringLiteral("-NoProfile") << QStringLiteral("-Command") << content;
+        }
+        else
+        {
+            program = QStringLiteral("cmd.exe");
+            invocation->effectiveCommandShell = QStringLiteral("cmd");
+            invocation->commandKey = makeCommandKey(content, work, invocation->effectiveCommandShell, invocation->commandEnv);
+            args << QStringLiteral("/c") << content;
+        }
 #else
-        program = QStringLiteral("/bin/sh");
+        if (requestedShell == QStringLiteral("bash"))
+        {
+            program = QStringLiteral("/bin/bash");
+            invocation->effectiveCommandShell = QStringLiteral("bash");
+        }
+        else
+        {
+            program = QStringLiteral("/bin/sh");
+            invocation->effectiveCommandShell = QStringLiteral("sh");
+        }
+        invocation->commandKey = makeCommandKey(content, work, invocation->effectiveCommandShell, invocation->commandEnv);
         args << QStringLiteral("-lc") << content;
 #endif
     }
@@ -2516,9 +3366,15 @@ void xTool::handleCommandStdout(const ToolInvocationPtr &invocation, QProcess *p
 #endif
     invocation->aggregatedOutput += text;
     if (isError)
+    {
+        invocation->stderrText += text;
         emit tool2ui_terminalStderr(text);
+    }
     else
+    {
+        invocation->stdoutText += text;
         emit tool2ui_terminalStdout(text);
+    }
 }
 
 void xTool::handleCommandFinished(const ToolInvocationPtr &invocation, QProcess *process, int exitCode, QProcess::ExitStatus status)
@@ -2530,7 +3386,7 @@ void xTool::handleCommandFinished(const ToolInvocationPtr &invocation, QProcess 
     activeCommandInvocation_.reset();
     activeCommandInterrupted_ = false;
     emit tool2ui_terminalCommandFinished(exitCode, interrupted);
-    if (invocation && !invocation->cancelled.load(std::memory_order_acquire))
+    if (invocation)
     {
         QString finalOutput = invocation->aggregatedOutput;
         if (finalOutput.isEmpty())
@@ -2542,8 +3398,100 @@ void xTool::handleCommandFinished(const ToolInvocationPtr &invocation, QProcess 
             if (!finalOutput.endsWith('\n')) finalOutput.append('\n');
             finalOutput += QStringLiteral("[command interrupted]");
         }
-        sendStateMessage("tool:" + QString("execute_command ") + "\n" + finalOutput, TOOL_SIGNAL);
-        sendPushMessage(QString("execute_command ") + "\n" + finalOutput);
+
+        QJsonObject data;
+        data.insert(QStringLiteral("tool"), QStringLiteral("execute_command"));
+        data.insert(QStringLiteral("command_id"), static_cast<qint64>(invocation->id));
+        data.insert(QStringLiteral("cancellation_id"), QString::number(invocation->id));
+        data.insert(QStringLiteral("legacy_text"), QStringLiteral("exit code %1\n").arg(exitCode) + finalOutput);
+        data.insert(QStringLiteral("command"), invocation->commandContent);
+        data.insert(QStringLiteral("label"), invocation->commandLabel);
+        data.insert(QStringLiteral("cwd"), invocation->workingDirectory);
+        data.insert(QStringLiteral("requested_shell"), invocation->commandShell.isEmpty() ? QStringLiteral("default") : invocation->commandShell);
+        data.insert(QStringLiteral("shell"), invocation->effectiveCommandShell.isEmpty() ? QStringLiteral("default") : invocation->effectiveCommandShell);
+        data.insert(QStringLiteral("env_keys"), QJsonArray::fromStringList(invocation->commandEnv.keys()));
+        data.insert(QStringLiteral("stdout"), invocation->stdoutText);
+        data.insert(QStringLiteral("stderr"), invocation->stderrText);
+        data.insert(QStringLiteral("exit_code"), exitCode);
+        data.insert(QStringLiteral("duration_ms"), static_cast<qint64>(invocation->elapsedTimer.isValid() ? invocation->elapsedTimer.elapsed() : 0));
+        data.insert(QStringLiteral("interrupted"), interrupted);
+        data.insert(QStringLiteral("timed_out"), invocation->timedOut.load(std::memory_order_acquire));
+        data.insert(QStringLiteral("repeated_failed_command"), invocation->repeatedFailedCommand);
+        data.insert(QStringLiteral("path_retry_without_evidence"), invocation->pathRetryWithoutEvidence);
+
+        QJsonArray warnings;
+        if (invocation->repeatedFailedCommand)
+            warnings.append(QStringLiteral("This command repeats the previous failed command unchanged; inspect output or change strategy before retrying again."));
+        if (invocation->pathRetryWithoutEvidence)
+            warnings.append(QStringLiteral("This command repeats a path-sensitive failure without new stat/list/copy evidence."));
+
+        QJsonArray artifacts;
+        QStringList missingOutputs;
+        for (const QString &expected : invocation->expectedOutputs)
+        {
+            QString pathError;
+            const QString hostPath = resolveHostPathWithinWorkdir(expected, &pathError);
+            if (!hostPath.isEmpty() && QFileInfo::exists(hostPath))
+            {
+                const QFileInfo info(hostPath);
+                artifacts.append(eva::runtime::makeArtifact(QDir::toNativeSeparators(hostPath), info.size(), info.suffix(), expected));
+            }
+            else
+            {
+                missingOutputs << expected;
+            }
+        }
+        if (!missingOutputs.isEmpty())
+        {
+            data.insert(QStringLiteral("missing_expected_outputs"), QJsonArray::fromStringList(missingOutputs));
+            QStringList searchRoots;
+            const QString workRoot = QDir::cleanPath(resolveWorkRoot());
+            searchRoots << workRoot << QDir(workRoot).filePath(QStringLiteral("artifacts")) << QDir(workRoot).filePath(QStringLiteral(".eva_runs"));
+            QJsonObject artifactSearch = eva::runtime::artifactMissingRecoveryPlan(missingOutputs, searchRoots);
+            artifactSearch.insert(QStringLiteral("matches"), artifactSearchMatches(missingOutputs, searchRoots));
+            data.insert(QStringLiteral("artifact_search"), artifactSearch);
+            warnings.append(QStringLiteral("One or more expected outputs were not found."));
+        }
+
+        const bool ok = exitCode == 0 && !interrupted && missingOutputs.isEmpty();
+        QString errorType;
+        QJsonObject error;
+        QJsonArray recoveryHints;
+        if (!ok)
+        {
+            const QString combined = finalOutput + QLatin1Char('\n') + invocation->stderrText;
+            if (invocation->timedOut.load(std::memory_order_acquire)) errorType = QStringLiteral("timeout");
+            else if (!missingOutputs.isEmpty()) errorType = QStringLiteral("artifact_missing");
+            else errorType = eva::runtime::toolErrorTypeForMessage(combined);
+            error = eva::runtime::makeToolError(errorType, combined.left(2000));
+            QJsonObject details;
+            details.insert(QStringLiteral("command"), invocation->commandContent);
+            details.insert(QStringLiteral("cwd"), invocation->workingDirectory);
+            recoveryHints = commandRecoveryHints(errorType, details);
+            if (errorType == QStringLiteral("dependency") || errorType == QStringLiteral("network"))
+                data.insert(QStringLiteral("runtime_diagnostics"), eva::runtime::runtimeDiagnostics(QStringList{QStringLiteral("node"), QStringLiteral("npm"), QStringLiteral("python"), QStringLiteral("pip"), QStringLiteral("git")}));
+            sendStateMessage(eva::runtime::progressEventLine(eva::runtime::ProgressEventKind::Recovering, QStringLiteral("Command failure classified"), QJsonObject{{QStringLiteral("error_type"), errorType}, {QStringLiteral("tool"), QStringLiteral("execute_command")}}, invocation->turnId), SIGNAL_SIGNAL);
+            lastFailedCommandKey_ = invocation->commandKey;
+            if (errorType == QStringLiteral("path"))
+            {
+                lastPathFailureCommandKey_ = invocation->commandKey;
+                recoveryEvidenceSinceLastFailure_ = false;
+            }
+        }
+        else if (lastFailedCommandKey_ == invocation->commandKey)
+        {
+            lastFailedCommandKey_.clear();
+            if (lastPathFailureCommandKey_ == invocation->commandKey) lastPathFailureCommandKey_.clear();
+            recoveryEvidenceSinceLastFailure_ = false;
+        }
+
+        const QString summary = ok
+                                    ? QStringLiteral("Command completed with exit code 0")
+                                    : QStringLiteral("Command failed with exit code %1").arg(exitCode);
+        const QString envelope = eva::runtime::toolResultEnvelopeToString(
+            eva::runtime::makeToolResultEnvelope(ok, summary, data, artifacts, warnings, error, recoveryHints));
+        sendStateMessage("tool:" + QString("execute_command ") + "\n" + finalOutput, ok ? TOOL_SIGNAL : WRONG_SIGNAL);
+        sendPushMessage(QStringLiteral("execute_command return\n") + envelope);
         qDebug() << QString("execute_command ") + "\n" + finalOutput;
     }
     finishInvocation(invocation);
@@ -2656,7 +3604,9 @@ QString xTool::resolveHostPathWithinWorkdir(const QString &inputPath, QString *e
 {
     const QString workRoot = QDir::cleanPath(resolveWorkRoot());
     const QString skillsRoot = QDir::cleanPath(resolveSkillsRoot());
-    QString trimmed = QDir::fromNativeSeparators(inputPath.trimmed());
+    QString trimmed = inputPath.trimmed();
+    trimmed.replace(QLatin1Char('\\'), QLatin1Char('/'));
+    trimmed = QDir::fromNativeSeparators(trimmed);
     if (trimmed.isEmpty()) trimmed = QStringLiteral(".");
     QString baseRoot = workRoot;
     if (dockerSandboxEnabled())
@@ -2710,15 +3660,40 @@ QString xTool::resolveHostPathWithinWorkdir(const QString &inputPath, QString *e
     {
         candidate = QDir::cleanPath(QDir(baseRoot).filePath(trimmed));
     }
-    const QString normalizedCandidateFs = QDir::fromNativeSeparators(candidate);
 #ifdef _WIN32
     const Qt::CaseSensitivity cs = Qt::CaseInsensitive;
 #else
     const Qt::CaseSensitivity cs = Qt::CaseSensitive;
 #endif
+    auto normalizedRealPath = [](const QString &path) -> QString {
+        QFileInfo info(path);
+        if (info.exists())
+        {
+            const QString canonical = info.canonicalFilePath();
+            return QDir::fromNativeSeparators(QDir::cleanPath(canonical.isEmpty() ? info.absoluteFilePath() : canonical));
+        }
+
+        QDir dir = info.absoluteDir();
+        QStringList suffix;
+        while (!dir.exists())
+        {
+            const QString name = QFileInfo(dir.path()).fileName();
+            if (name.isEmpty()) break;
+            suffix.prepend(name);
+            const QString parent = QFileInfo(dir.path()).absolutePath();
+            if (parent == dir.path()) break;
+            dir = QDir(parent);
+        }
+        const QString canonicalParent = QFileInfo(dir.absolutePath()).canonicalFilePath();
+        QString rebuilt = canonicalParent.isEmpty() ? dir.absolutePath() : canonicalParent;
+        for (const QString &part : suffix) rebuilt = QDir(rebuilt).filePath(part);
+        rebuilt = QDir(rebuilt).filePath(info.fileName());
+        return QDir::fromNativeSeparators(QDir::cleanPath(rebuilt));
+    };
+    const QString normalizedCandidateFs = normalizedRealPath(candidate);
     auto isInsideRoot = [&](const QString &rootPath) -> bool {
         if (rootPath.isEmpty()) return false;
-        const QString normalizedRootFs = QDir::fromNativeSeparators(QDir::cleanPath(rootPath));
+        const QString normalizedRootFs = normalizedRealPath(rootPath);
         if (normalizedRootFs.isEmpty()) return false;
         QString prefix = normalizedRootFs;
         if (!prefix.endsWith('/')) prefix += '/';
@@ -2739,11 +3714,36 @@ bool xTool::resolveToolPath(const QString &inputPath, ToolPathResolution *resolu
     ToolPathResolution result;
     result.originalInput = inputPath;
     const bool docker = dockerSandboxEnabled();
-    const QString trimmed = QDir::fromNativeSeparators(inputPath.trimmed());
+    QString trimmed = inputPath.trimmed();
+    trimmed.replace(QLatin1Char('\\'), QLatin1Char('/'));
+    trimmed = QDir::fromNativeSeparators(trimmed);
     if (docker && trimmed.startsWith(QLatin1Char('/')))
     {
         result.containerAbsolute = true;
         result.containerPath = normalizeUnixPath(trimmed);
+        auto mapContainerPath = [&](const QString &containerRoot, const QString &hostRoot) -> bool {
+            if (containerRoot.isEmpty() || hostRoot.isEmpty()) return false;
+            QString root = normalizeUnixPath(containerRoot);
+            QString prefix = root;
+            if (!prefix.endsWith('/')) prefix += '/';
+            if (result.containerPath == root)
+            {
+                result.hostPath = QDir::cleanPath(hostRoot);
+                return true;
+            }
+            if (result.containerPath.startsWith(prefix))
+            {
+                result.hostPath = QDir::cleanPath(QDir(hostRoot).filePath(result.containerPath.mid(prefix.size())));
+                return true;
+            }
+            return false;
+        };
+        const QString containerWorkdir = dockerSandbox_ ? dockerSandbox_->containerWorkdir() : DockerSandbox::defaultContainerWorkdir();
+        if (!mapContainerPath(containerWorkdir, resolveWorkRoot()) && !mapContainerPath(DockerSandbox::skillsMountPoint(), resolveSkillsRoot()))
+        {
+            if (errorMessage) *errorMessage = QStringLiteral("Path outside permitted docker mounts");
+            return false;
+        }
     }
     else
     {
@@ -2788,6 +3788,8 @@ QString xTool::dockerWorkdirOrFallback(const QString &hostWorkdir) const
 {
     if (dockerSandboxEnabled() && dockerSandbox_->sandboxEnabled())
     {
+        const QString mapped = containerPathForHost(hostWorkdir);
+        if (!mapped.isEmpty()) return mapped;
         return dockerSandbox_->containerWorkdir();
     }
     return hostWorkdir;

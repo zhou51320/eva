@@ -2,6 +2,9 @@ set(XTOOL_TEST_SOURCES
     xtool_tests.cpp
     ${CMAKE_SOURCE_DIR}/src/xtool.cpp
     ${CMAKE_SOURCE_DIR}/src/service/tools/tool_registry.cpp
+    ${CMAKE_SOURCE_DIR}/src/runtime/tool_result_envelope.cpp
+    ${CMAKE_SOURCE_DIR}/src/runtime/recovery_engine.cpp
+    ${CMAKE_SOURCE_DIR}/src/runtime/progress_events.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/perf_metrics.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/docker_sandbox.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/flowtracer.cpp
@@ -79,3 +82,31 @@ endif()
 
 add_test(NAME xtool_harness_tests COMMAND xtool_harness_tests)
 set_tests_properties(xtool_harness_tests PROPERTIES LABELS unit)
+
+
+add_executable(tool_result_envelope_tests
+    tool_result_envelope_tests.cpp
+    ${CMAKE_SOURCE_DIR}/src/runtime/tool_result_envelope.cpp
+    ${CMAKE_SOURCE_DIR}/src/runtime/recovery_engine.cpp
+)
+target_link_libraries(tool_result_envelope_tests PRIVATE
+    Qt5::Core
+    eva_doctest
+)
+target_include_directories(tool_result_envelope_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/src
+)
+target_compile_features(tool_result_envelope_tests PRIVATE cxx_std_17)
+
+if (MINGW)
+    if (DEFINED EVA_COMPILE_OPTIONS)
+        target_compile_options(tool_result_envelope_tests PRIVATE ${EVA_COMPILE_OPTIONS})
+    endif()
+    if (DEFINED EVA_LINK_OPTIONS)
+        target_link_options(tool_result_envelope_tests PRIVATE ${EVA_LINK_OPTIONS})
+    endif()
+endif()
+
+add_test(NAME tool_result_envelope_tests COMMAND tool_result_envelope_tests)
+set_tests_properties(tool_result_envelope_tests PROPERTIES LABELS unit)

@@ -548,6 +548,9 @@ QString Widget::create_extra_prompt()
             available_tools_describe += promptx::toolReadFile().text + "\n\n";
             available_tools_describe += promptx::toolSkillCall().text + "\n\n";
             available_tools_describe += promptx::toolScheduleTask().text + "\n\n";
+            available_tools_describe += promptx::toolStatFile().text + "\n\n";
+            available_tools_describe += promptx::toolCopyFile().text + "\n\n";
+            available_tools_describe += promptx::toolArtifactConfirm().text + "\n\n";
             available_tools_describe += promptx::toolWriteFile().text + "\n\n";
             available_tools_describe += promptx::toolReplaceInFile().text + "\n\n";
             available_tools_describe += promptx::toolEditInFile().text + "\n\n";
@@ -714,6 +717,9 @@ QJsonArray Widget::buildFunctionTools() const
             appendTool(promptx::toolReadFile());
             appendTool(promptx::toolSkillCall());
             appendTool(promptx::toolScheduleTask());
+            appendTool(promptx::toolStatFile());
+            appendTool(promptx::toolCopyFile());
+            appendTool(promptx::toolArtifactConfirm());
             appendTool(promptx::toolWriteFile());
             appendTool(promptx::toolReplaceInFile());
             appendTool(promptx::toolEditInFile());

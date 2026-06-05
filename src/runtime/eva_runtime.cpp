@@ -293,6 +293,9 @@ ToolExecutor *EvaRuntime::createToolExecutor(const QString &applicationDirPath)
         return existing;
 
     ToolExecutor *tool = new ToolExecutor(applicationDirPath);
+    connect(tool, &ToolExecutor::runtimeEventReady, this, [this](RuntimeEvent event) {
+        publishEvent(event);
+    }, Qt::QueuedConnection);
     moveOwnedWorkerObject(tool, workers_ ? workers_->toolThread() : nullptr);
     ownedToolExecutor_ = tool;
     attachToolDriver(tool);

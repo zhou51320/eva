@@ -12,8 +12,17 @@ enum class RuntimeEventType
     OutputChunk,
     RecordAdd,
     RecordUpdate,
+    TaskStarted,
+    PlanCreated,
     ToolStarted,
+    ToolOutput,
     ToolFinished,
+    Recovering,
+    SkillLoading,
+    SkillRunning,
+    ArtifactReady,
+    TaskCompleted,
+    TaskFailed,
     TurnFinished,
     Metrics,
     Error,
@@ -29,8 +38,17 @@ inline QString runtimeEventTypeName(RuntimeEventType type)
     case RuntimeEventType::OutputChunk: return QStringLiteral("output_chunk");
     case RuntimeEventType::RecordAdd: return QStringLiteral("record_add");
     case RuntimeEventType::RecordUpdate: return QStringLiteral("record_update");
+    case RuntimeEventType::TaskStarted: return QStringLiteral("task_started");
+    case RuntimeEventType::PlanCreated: return QStringLiteral("plan_created");
     case RuntimeEventType::ToolStarted: return QStringLiteral("tool_started");
+    case RuntimeEventType::ToolOutput: return QStringLiteral("tool_output");
     case RuntimeEventType::ToolFinished: return QStringLiteral("tool_finished");
+    case RuntimeEventType::Recovering: return QStringLiteral("recovering");
+    case RuntimeEventType::SkillLoading: return QStringLiteral("skill_loading");
+    case RuntimeEventType::SkillRunning: return QStringLiteral("skill_running");
+    case RuntimeEventType::ArtifactReady: return QStringLiteral("artifact_ready");
+    case RuntimeEventType::TaskCompleted: return QStringLiteral("task_completed");
+    case RuntimeEventType::TaskFailed: return QStringLiteral("task_failed");
     case RuntimeEventType::TurnFinished: return QStringLiteral("turn_finished");
     case RuntimeEventType::Metrics: return QStringLiteral("metrics");
     case RuntimeEventType::Error: return QStringLiteral("error");

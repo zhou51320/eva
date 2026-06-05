@@ -16,6 +16,7 @@
 
 #include "app/config_migrator.h"
 #include "app/default_model_finder.h"
+#include "prompt.h"
 #include "runtime/runtime_bootstrap.h"
 #include "service/net/net_client.h"
 #include "utils/devicemanager.h"
@@ -1346,8 +1347,17 @@ QJsonObject AcpRuntime::streamChatCompletion(const QJsonObject &request,
             command.apis.api_completion_endpoint = QStringLiteral(COMPLETION_ENDPOINT);
         }
 
-        command.endpoint.date_prompt.clear();
         command.endpoint.messagesArray = request.value(QStringLiteral("messages")).toArray();
+        bool requestHasSystemMessage = false;
+        for (const QJsonValue &messageValue : command.endpoint.messagesArray)
+        {
+            if (messageValue.toObject().value(QStringLiteral("role")).toString() == QStringLiteral("system"))
+            {
+                requestHasSystemMessage = true;
+                break;
+            }
+        }
+        command.endpoint.date_prompt = requestHasSystemMessage ? QString() : promptx::systemPromptTemplate();
         command.endpoint.tools = request.value(QStringLiteral("tools")).toArray();
         command.endpoint.tool_call_mode = command.endpoint.tools.isEmpty() ? DEFAULT_TOOL_CALL_MODE : TOOL_CALL_FUNCTION;
         command.endpoint.is_complete_state = false;
@@ -1400,6 +1410,20 @@ QJsonObject AcpRuntime::streamChatCompletion(const QJsonObject &request,
             {
                 assistantText += event.text;
                 if (onChunk) onChunk(QStringLiteral("assistant"), event.text);
+            }
+            else if (event.type == RuntimeEventType::TaskStarted ||
+                     event.type == RuntimeEventType::PlanCreated ||
+                     event.type == RuntimeEventType::ToolStarted ||
+                     event.type == RuntimeEventType::ToolOutput ||
+                     event.type == RuntimeEventType::ToolFinished ||
+                     event.type == RuntimeEventType::Recovering ||
+                     event.type == RuntimeEventType::SkillLoading ||
+                     event.type == RuntimeEventType::SkillRunning ||
+                     event.type == RuntimeEventType::ArtifactReady ||
+                     event.type == RuntimeEventType::TaskCompleted ||
+                     event.type == RuntimeEventType::TaskFailed)
+            {
+                if (onChunk) onChunk(QStringLiteral("event"), QString::fromUtf8(QJsonDocument(runtimeEventToJson(event)).toJson(QJsonDocument::Compact)));
             }
             else if (event.type == RuntimeEventType::Error || event.type == RuntimeEventType::CommandRejected)
             {

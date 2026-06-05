@@ -45,6 +45,12 @@ add_executable(
     src/runtime/runtime_tool_driver.h
     src/runtime/runtime_worker_host.cpp
     src/runtime/runtime_worker_host.h
+    src/runtime/tool_result_envelope.cpp
+    src/runtime/tool_result_envelope.h
+    src/runtime/recovery_engine.cpp
+    src/runtime/recovery_engine.h
+    src/runtime/progress_events.cpp
+    src/runtime/progress_events.h
     src/service/net/net_client.cpp
     src/service/net/net_client.h
     src/service/net/request_snapshot.h
@@ -163,6 +169,7 @@ target_include_directories(${EVA_TARGET} PRIVATE
 add_executable(
     eva_acp
     resource/res_acp_web.qrc
+    resource/res_core.qrc
     src/acp_main.cpp
     src/acp_bridge_client.cpp
     src/acp_bridge_client.h
@@ -188,6 +195,12 @@ add_executable(
     src/runtime/runtime_tool_driver.h
     src/runtime/runtime_worker_host.cpp
     src/runtime/runtime_worker_host.h
+    src/runtime/tool_result_envelope.cpp
+    src/runtime/tool_result_envelope.h
+    src/runtime/recovery_engine.cpp
+    src/runtime/recovery_engine.h
+    src/runtime/progress_events.cpp
+    src/runtime/progress_events.h
     src/service/net/net_client.cpp
     src/service/net/net_client.h
     src/service/net/request_snapshot.h
@@ -227,6 +240,8 @@ add_executable(
     src/utils/flowtracer.h
     src/prompt_builder.cpp
     src/prompt_builder.h
+    src/prompt.cpp
+    src/prompt.h
     src/xnet.cpp
     src/xnet.h)
 

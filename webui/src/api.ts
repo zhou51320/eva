@@ -1,4 +1,4 @@
-import type { ApiMessage, BackendState, ChatStats, GenerationSettings, LoadPayload, ModelInfo, SkillAction, SkillsState } from './types'
+import type { ApiMessage, BackendState, ChatStats, GenerationSettings, LoadPayload, ModelInfo, RuntimeEvent, SkillAction, SkillsState } from './types'
 
 async function parseJson(response: Response): Promise<any> {
   const text = await response.text()
@@ -78,9 +78,18 @@ export interface ChatDelta {
   stats?: ChatStats
 }
 
+export type ChatStreamPart =
+  | { type: 'content'; text: string; content: string; reasoning: string; stats?: ChatStats }
+  | { type: 'reasoning'; text: string; content: string; reasoning: string; stats?: ChatStats }
+  | { type: 'tool'; tool: string }
+  | { type: 'event'; event: RuntimeEvent }
+  | { type: 'final'; content: string; reasoning: string; stats?: ChatStats }
+
 export interface ChatStreamCallbacks {
   onDelta: (delta: ChatDelta) => void
   onToolStep?: (tool: string) => void
+  onRuntimeEvent?: (event: RuntimeEvent) => void
+  onStreamPart?: (part: ChatStreamPart) => void
   signal?: AbortSignal
 }
 
@@ -129,6 +138,8 @@ export async function sendChat(
     content = data.choices?.[0]?.message?.content || ''
     reasoning = data.choices?.[0]?.message?.reasoning || ''
     stats = normalizeStats(data.eva_stats || data.usage)
+    if (reasoning) callbacks.onStreamPart?.({ type: 'reasoning', text: reasoning, content, reasoning, stats })
+    if (content) callbacks.onStreamPart?.({ type: 'content', text: content, content, reasoning, stats })
     callbacks.onDelta({ content, reasoning, stats })
     return { content, reasoning, stats }
   }
@@ -154,21 +165,40 @@ export async function sendChat(
         if (typeof data.eva_final.content === 'string') content = data.eva_final.content
         if (typeof data.eva_final.reasoning === 'string') reasoning = data.eva_final.reasoning
         if (data.eva_final.stats) stats = normalizeStats(data.eva_final.stats)
+        callbacks.onStreamPart?.({ type: 'final', content, reasoning, stats })
         callbacks.onDelta({ content, reasoning, stats })
         continue
       }
       if (data.eva_stats) stats = normalizeStats(data.eva_stats)
       if (data.usage) stats = normalizeStats(data.usage)
       const delta = data.choices?.[0]?.delta || {}
-      if (typeof delta.eva_tool === 'string') {
-        callbacks.onToolStep?.(delta.eva_tool)
+      if (typeof delta.eva_event === 'object' && delta.eva_event) {
+        const event = delta.eva_event as RuntimeEvent
+        callbacks.onRuntimeEvent?.(event)
+        callbacks.onStreamPart?.({ type: 'event', event })
         continue
       }
-      if (typeof delta.content === 'string') content += delta.content
-      if (typeof delta.reasoning === 'string') reasoning += delta.reasoning
-      if (typeof delta.reasoning_content === 'string') reasoning += delta.reasoning_content
+      if (typeof delta.eva_tool === 'string') {
+        callbacks.onToolStep?.(delta.eva_tool)
+        callbacks.onStreamPart?.({ type: 'tool', tool: delta.eva_tool })
+        continue
+      }
+      if (typeof delta.reasoning === 'string') {
+        reasoning += delta.reasoning
+        callbacks.onStreamPart?.({ type: 'reasoning', text: delta.reasoning, content, reasoning, stats })
+      }
+      if (typeof delta.reasoning_content === 'string') {
+        reasoning += delta.reasoning_content
+        callbacks.onStreamPart?.({ type: 'reasoning', text: delta.reasoning_content, content, reasoning, stats })
+      }
+      if (typeof delta.content === 'string') {
+        content += delta.content
+        callbacks.onStreamPart?.({ type: 'content', text: delta.content, content, reasoning, stats })
+      }
       if (!delta.content && data.choices?.[0]?.message?.content) {
-        content += data.choices[0].message.content
+        const text = data.choices[0].message.content
+        content += text
+        callbacks.onStreamPart?.({ type: 'content', text, content, reasoning, stats })
       }
       callbacks.onDelta({ content, reasoning, stats })
     }

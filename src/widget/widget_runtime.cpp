@@ -40,6 +40,31 @@ QString taskNameForRuntime(ConversationTask task)
     }
     return QStringLiteral("unknown");
 }
+
+QString progressSummaryForEvent(const RuntimeEvent &event)
+{
+    const QString text = event.text.trimmed();
+    if (!text.isEmpty()) return text;
+    const QString summary = event.payload.value(QStringLiteral("summary")).toString().trimmed();
+    if (!summary.isEmpty()) return summary;
+    return event.name.trimmed();
+}
+
+QString progressLabelForEvent(RuntimeEventType type)
+{
+    switch (type)
+    {
+    case RuntimeEventType::TaskStarted: return QStringLiteral("task_started");
+    case RuntimeEventType::PlanCreated: return QStringLiteral("plan_created");
+    case RuntimeEventType::Recovering: return QStringLiteral("recovering");
+    case RuntimeEventType::SkillLoading: return QStringLiteral("skill_loading");
+    case RuntimeEventType::SkillRunning: return QStringLiteral("skill_running");
+    case RuntimeEventType::ArtifactReady: return QStringLiteral("artifact_ready");
+    case RuntimeEventType::TaskCompleted: return QStringLiteral("task_completed");
+    case RuntimeEventType::TaskFailed: return QStringLiteral("task_failed");
+    default: return runtimeEventTypeName(type);
+    }
+}
 } // namespace
 
 void Widget::setRuntime(EvaRuntime *runtime)
@@ -1387,6 +1412,22 @@ void Widget::handleRuntimeEvent(const RuntimeEvent &event)
             currentToolRecordIndex_ = recordCreate(RecordRole::Tool, event.name);
         }
         break;
+    case RuntimeEventType::TaskStarted:
+    case RuntimeEventType::PlanCreated:
+    case RuntimeEventType::Recovering:
+    case RuntimeEventType::SkillLoading:
+    case RuntimeEventType::SkillRunning:
+    case RuntimeEventType::ArtifactReady:
+    case RuntimeEventType::TaskCompleted:
+    case RuntimeEventType::TaskFailed:
+    {
+        const QString summary = progressSummaryForEvent(event);
+        const QString label = progressLabelForEvent(event.type);
+        reflash_state(summary.isEmpty() ? QStringLiteral("progress:%1").arg(label)
+                                        : QStringLiteral("progress:%1 %2").arg(label, summary),
+                      event.type == RuntimeEventType::TaskFailed ? WRONG_SIGNAL : SIGNAL_SIGNAL);
+        break;
+    }
     case RuntimeEventType::TurnFinished:
         recv_pushover();
         break;

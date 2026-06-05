@@ -22,6 +22,7 @@
 
 #include "acp_http_server.h"
 #include "acp_runtime.h"
+#include "prompt.h"
 #include "runtime/runtime_bootstrap.h"
 #include "utils/flowtracer.h"
 #include "utils/startuplogger.h"
@@ -183,6 +184,7 @@ int main(int argc, char *argv[])
     app.setApplicationName(QStringLiteral("eva_acp"));
     app.setOrganizationName(QStringLiteral("eva"));
     installAcpDiagnostics(argc, argv);
+    promptx::loadPromptLibrary();
     QObject::connect(&app, &QCoreApplication::aboutToQuit, []()
     {
         qInfo().noquote() << QStringLiteral("[acp] aboutToQuit");

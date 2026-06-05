@@ -185,6 +185,9 @@ class xTool : public QObject
     ToolInvocationPtr activeCommandInvocation_;
     QProcess *activeCommandProcess_ = nullptr;
     bool activeCommandInterrupted_ = false;
+    QString lastFailedCommandKey_;
+    QString lastPathFailureCommandKey_;
+    bool recoveryEvidenceSinceLastFailure_ = false;
 
     std::atomic<quint64> nextInvocationId_{1};
     mutable std::mutex invocationMutex_;

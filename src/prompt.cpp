@@ -44,6 +44,43 @@ QString &currentWunderSystemPrompt()
     return value;
 }
 
+const QString &defaultAgentRuntimeProtocolEn()
+{
+    static const QString value = QStringLiteral(
+        "\n\n[EVA Agent Runtime Protocol]\n"
+        "Operate as a local agent runtime, not just a chat assistant. For tool-using tasks follow this loop: understand the goal, make a verifiable plan, inspect files/environment, act with tools, observe results, recover from failures, verify outputs, then report status.\n"
+        "Tool policy: prefer structured tools for routine file, path, search, copy, and artifact checks. Use shell/execute_command only when a CLI or script is needed; give commands a clear purpose, cwd, and timeout when the tool supports them.\n"
+        "Recovery policy: after a failure, classify the cause before retrying. For path errors inspect/list/normalize paths; for dependency errors check runtime availability or install locally when allowed; for syntax errors read and patch the failing file; for missing artifacts search approved output locations; for network errors surface proxy/TLS details; for unsupported platforms report the blocker. Never repeat the same failed action unchanged without new evidence.\n"
+        "Completion policy: do not claim success without observation. Generated files require artifact confirmation such as path and size. Code changes require a build/test/lint or an explicit explanation of why verification was skipped. If blocked, report the blocker and partial work instead of saying the task is complete.\n"
+        "Windows/Win7 policy: avoid assuming Unix shell, modern PowerShell, modern TLS, or modern Node/Python availability. Handle spaces, non-ASCII paths, drive letters, and legacy encodings carefully; prefer workspace-local or run-local dependencies and clear diagnostics.\n");
+    return value;
+}
+
+const QString &defaultAgentRuntimeProtocolZh()
+{
+    static const QString value = QStringLiteral(
+        "\n\n[EVA Agent Runtime Protocol]\n"
+        "你运行在本地 agent runtime 中，不只是聊天助手。需要使用工具完成任务时，遵循闭环：理解目标 → 制定可验证计划 → 检查文件/环境 → 使用工具执行 → 观察结果 → 失败恢复 → 验证输出 → 汇报状态。\n"
+        "工具策略：常规文件、路径、搜索、复制和产物确认优先使用结构化工具。只有确实需要 CLI 或脚本时才使用 shell/execute_command；工具支持时命令必须有明确目的、cwd 和 timeout。\n"
+        "恢复策略：工具失败后先分类再重试。路径错误先检查/列目录/规范化路径；依赖错误先检查运行时可用性，允许时仅做本地/运行目录安装；语法错误先读取并修补出错文件；产物缺失先搜索允许的输出位置；网络错误要暴露代理/TLS 诊断；平台不支持要说明阻塞原因。没有新证据时，不得原样重复同一失败动作。\n"
+        "完成策略：没有 observation 不得声称完成。生成文件必须确认 artifact（路径、大小等）；代码修改必须构建/测试/lint，或明确说明为什么未验证。被阻塞时报告阻塞与已完成部分，不要说任务已完成。\n"
+        "Windows/Win7 策略：不要假设 Unix shell、现代 PowerShell、现代 TLS 或现代 Node/Python 可用。谨慎处理空格、中文路径、盘符、反斜杠和旧编码；优先使用工作区/运行目录局部依赖，并给出清晰诊断。\n");
+    return value;
+}
+
+QString &currentAgentRuntimeProtocol()
+{
+    static QString value = defaultAgentRuntimeProtocolEn();
+    return value;
+}
+
+QString appendAgentRuntimeProtocol(QString base)
+{
+    base = base.trimmed();
+    if (base.contains(QStringLiteral("[EVA Agent Runtime Protocol]"))) return base;
+    return base + currentAgentRuntimeProtocol();
+}
+
 const QString &defaultExtraPromptEn()
 {
     // 对齐参考项目 wunder 的工具提示词结构（英文版）
@@ -60,6 +97,8 @@ const QString &defaultExtraPromptEn()
         "</tool_call>\n"
         "\n"
         "Tool results will be returned as a user message prefixed with \"tool_response: \".\n"
+        "Prefer structured file/path/artifact tools for routine work; use execute_command only when a CLI or script is needed. If a tool fails, inspect the observation and change strategy before retrying.\n"
+        "Do not call answer until required files, commands, or artifacts have been verified, or you explicitly report what could not be verified.\n"
         "\n");
     return value;
 }
@@ -80,6 +119,8 @@ const QString &defaultExtraPromptZh()
         "</tool_call>\n"
         "\n"
         "工具执行结果会作为以 \"tool_response: \" 前缀的 user 消息返回。\n"
+        "常规文件/路径/产物操作优先使用结构化工具；只有确实需要 CLI 或脚本时才使用 execute_command。工具失败后必须观察结果并改变策略再重试。\n"
+        "在所需文件、命令或产物完成验证前，不得调用 answer；若无法验证，必须明确说明未验证内容。\n"
         "\n");
     return value;
 }
@@ -103,6 +144,9 @@ const QString &defaultEngineerInfoEn()
         "- For long-running tasks, leave progress traces and deliver stable output; you may use schedule_task to set reminders or recurring jobs.\n"
         "- If instructions are unclear, ask for clarification and avoid hallucinating details.\n"
         "- When the plan board tool is enabled, start with a concise plan using it and keep it updated as you execute.\n"
+        "- Execute in a loop: understand, plan, inspect, act, observe, recover, verify, then report. Do not repeat identical failed actions without new evidence.\n"
+        "- For generated files confirm artifact path/size before success; for code changes run build/test/lint or state why verification was skipped.\n"
+        "- On Windows/Win7, avoid modern shell assumptions and handle spaces, non-ASCII paths, legacy encodings, and local runtimes carefully.\n"
         "{engineer_system_info}");
     return value;
 }
@@ -120,6 +164,9 @@ const QString &defaultEngineerInfoZh()
         "- 长时间运行任务需要分段留痕，稳定输出；可以使用 schedule_task 设置提醒或周期任务。\n"
         "- 遇到不明确的指令时，优先请求澄清，避免空想虚构。\n"
         "- 当启用“计划面板”工具时，先用它给出简洁计划，并在执行过程中持续更新状态。\n"
+        "- 按闭环执行：理解、计划、检查、执行、观察、恢复、验证、汇报；没有新证据不得原样重复失败动作。\n"
+        "- 生成文件必须确认路径/大小后才能报告成功；代码修改必须构建/测试/lint，或说明为什么跳过验证。\n"
+        "- 在 Windows/Win7 上避免假设现代 shell，谨慎处理空格、中文路径、旧编码和本地运行时。\n"
         "{engineer_system_info}");
     return value;
 }
@@ -196,12 +243,14 @@ void applyPromptLanguage(int languageFlag)
     const QString systemPath = useChinesePrompt(languageFlag)
                                    ? QStringLiteral(DEFAULT_SYSTEM_PROMPT_ZH_RESOURCE)
                                    : QStringLiteral(DEFAULT_SYSTEM_PROMPT_EN_RESOURCE);
-    currentSystemPrompt() = readPromptResource(systemPath, fallback);
-    const QString wunderPath = useChinesePrompt(languageFlag)
+    const bool useZh = useChinesePrompt(languageFlag);
+    currentAgentRuntimeProtocol() = useZh ? defaultAgentRuntimeProtocolZh() : defaultAgentRuntimeProtocolEn();
+    currentSystemPrompt() = appendAgentRuntimeProtocol(readPromptResource(systemPath, fallback));
+    const QString wunderPath = useZh
                                    ? QStringLiteral(WUNDER_SYSTEM_PROMPT_ZH_RESOURCE)
                                    : QStringLiteral(WUNDER_SYSTEM_PROMPT_EN_RESOURCE);
-    currentWunderSystemPrompt() = readPromptResource(wunderPath, currentSystemPrompt());
-    if (useChinesePrompt(languageFlag))
+    currentWunderSystemPrompt() = appendAgentRuntimeProtocol(readPromptResource(wunderPath, currentSystemPrompt()));
+    if (useZh)
     {
         currentExtraPrompt() = defaultExtraPromptZh();
         currentEngineerInfo() = defaultEngineerInfoZh();
@@ -270,6 +319,11 @@ const QString &systemPromptTemplate()
 const QString &wunderSystemPromptTemplate()
 {
     return currentWunderSystemPrompt();
+}
+
+const QString &agentRuntimeProtocol()
+{
+    return currentAgentRuntimeProtocol();
 }
 
 const QString &engineerInfo()
@@ -372,8 +426,28 @@ const TOOLS_INFO &toolSkillCall()
     return ToolRegistry::toolByIndex(16);
 }
 
-const TOOLS_INFO &toolScheduleTask()
+const TOOLS_INFO &toolSkillRun()
 {
     return ToolRegistry::toolByIndex(17);
+}
+
+const TOOLS_INFO &toolScheduleTask()
+{
+    return ToolRegistry::toolByIndex(18);
+}
+
+const TOOLS_INFO &toolStatFile()
+{
+    return ToolRegistry::toolByIndex(19);
+}
+
+const TOOLS_INFO &toolCopyFile()
+{
+    return ToolRegistry::toolByIndex(20);
+}
+
+const TOOLS_INFO &toolArtifactConfirm()
+{
+    return ToolRegistry::toolByIndex(21);
 }
 } // namespace promptx

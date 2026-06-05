@@ -1,6 +1,15 @@
 import { reactive } from 'vue'
 import * as api from './api'
 import { DEFAULT_SETTINGS } from './types'
+import {
+  appendErrorSegment,
+  appendRuntimeStatusSegment,
+  appendTextSegment,
+  appendToolMarker,
+  applyRuntimeEventToTimeline,
+  finalizeTimeline,
+  reconcileFinalText,
+} from './timeline'
 import type {
   ApiMessage,
   BackendState,
@@ -14,6 +23,7 @@ import type {
   Session,
   SkillsState,
 } from './types'
+import type { ChatStreamPart } from './api'
 
 const SESSIONS_KEY = 'eva-acp-webui-sessions'
 const THEME_KEY = 'eva-acp-webui-theme'
@@ -151,6 +161,26 @@ function completeStats(stats: ChatStats | undefined, content: string, startedAt:
   }
 }
 
+function applyStreamPart(assistant: ChatMessage, part: ChatStreamPart) {
+  if (part.type === 'reasoning') {
+    appendTextSegment(assistant, 'thinking', part.text)
+    return
+  }
+  if (part.type === 'content') {
+    appendTextSegment(assistant, 'answer', part.text)
+    return
+  }
+  if (part.type === 'tool') {
+    appendToolMarker(assistant, part.tool)
+    return
+  }
+  if (part.type === 'event') {
+    applyRuntimeEventToTimeline(assistant, part.event)
+    return
+  }
+  reconcileFinalText(assistant, part.content, part.reasoning)
+}
+
 let refreshInFlight: Promise<void> | null = null
 async function refreshAll() {
   // Coalesce concurrent calls: overlapping refreshes would issue concurrent
@@ -238,7 +268,7 @@ async function sendMessage(text: string, images: string[], stream: boolean) {
     meta: new Date().toLocaleTimeString(),
   })
   if (session.title === '新对话') session.title = (input || '图片消息').slice(0, 24)
-  const assistantDraft: ChatMessage = { role: 'assistant', content: '', reasoning: '', pending: true, meta: '生成中…' }
+  const assistantDraft: ChatMessage = { role: 'assistant', content: '', reasoning: '', segments: [], pending: true, meta: '生成中…' }
   session.messages.push(assistantDraft)
   // Mutate the reactive array element, NOT the raw pushed object — otherwise Vue
   // does not track streaming deltas and the reply only appears after a reload.
@@ -262,10 +292,19 @@ async function sendMessage(text: string, images: string[], stream: boolean) {
         if (!assistant.toolSteps) assistant.toolSteps = []
         assistant.toolSteps.push(tool)
       },
+      onRuntimeEvent: (event) => {
+        if (!assistant.runtimeEvents) assistant.runtimeEvents = []
+        assistant.runtimeEvents.push(event)
+      },
+      onStreamPart: (part) => applyStreamPart(assistant, part),
     })
     assistant.pending = false
     assistant.meta = assistant.content ? '完成' : '完成 · 空响应'
-    if (!assistant.content) assistant.content = '(空响应)'
+    if (!assistant.content) {
+      assistant.content = '(空响应)'
+      appendTextSegment(assistant, 'answer', assistant.content)
+    }
+    finalizeTimeline(assistant)
     assistant.stats = completeStats(result.stats ?? assistant.stats, assistant.content, startedAt, true)
   } catch (error) {
     const err = error as Error
@@ -274,10 +313,13 @@ async function sendMessage(text: string, images: string[], stream: boolean) {
     if (err.name === 'AbortError') {
       assistant.meta = '已停止'
       if (!assistant.content) assistant.content = '_已停止_'
+      appendRuntimeStatusSegment(assistant, { type: 'task_failed', text: '已停止', error: 'AbortError' })
     } else {
       assistant.meta = '错误'
       assistant.content = `请求失败：${err.message}`
+      appendErrorSegment(assistant, '请求失败', err.message)
     }
+    finalizeTimeline(assistant)
     assistant.stats = completeStats(assistant.stats, assistant.content, startedAt, false)
   } finally {
     state.streaming = false
